@@ -30,7 +30,7 @@ st.set_page_config(
 
 # Initialize database (sandbox or production)
 @st.cache_resource
-def init_db(sandbox_mode=False):
+def init_db(sandbox_mode=False, _cache_version=1):
     db_path = "kuyan-sandbox.db" if sandbox_mode else "kuyan.db"
 
     db = Database(db_path=db_path)
@@ -45,7 +45,7 @@ def init_db(sandbox_mode=False):
     return db
 
 
-db = init_db(sandbox_mode=is_sandbox)
+db = init_db(sandbox_mode=is_sandbox, _cache_version=4)
 
 
 # ===== CONSTANTS =====
@@ -116,17 +116,109 @@ def render_snapshot_log(snapshots, base_currency, rates):
                     rates
                 )
 
-                acc_symbol = get_currency_symbol(snapshot['currency'])
-                entry = (
-                    f"    • {snapshot['name']} ({snapshot['account_type']}): "
-                    f"`{acc_symbol}{snapshot['balance']:,.2f}` {snapshot['currency']}"
-                )
+                # Check if this is a commodity account
+                is_commodity = snapshot["account_type"] == "Commodity"
+                
+                if is_commodity:
+                    # For commodities, extract unit from account name
+                    account_name = snapshot["name"]
+                    unit = "units"
+                    if "(" in account_name and ")" in account_name:
+                        unit = account_name[account_name.rfind("(")+1:account_name.rfind(")")]
+                    
+                    # Show balance with unit instead of currency symbol
+                    commodity_name = snapshot.get("commodity", snapshot["currency"])
+                    entry = (
+                        f"    • {snapshot['name']} ({snapshot['account_type']}): "
+                        f"`{snapshot['balance']:,.2f} {unit}` {commodity_name}"
+                    )
+                else:
+                    # For regular accounts, show currency symbol
+                    acc_symbol = get_currency_symbol(snapshot['currency'])
+                    entry = (
+                        f"    • {snapshot['name']} ({snapshot['account_type']}): "
+                        f"`{acc_symbol}{snapshot['balance']:,.2f}` {snapshot['currency']}"
+                    )
+                
                 if snapshot['currency'] != base_currency:
                     entry += f" = `{currency_symbol}{converted_value:,.2f}` {base_currency}"
 
                 log_entries.append(entry)
 
     st.markdown("\n".join(log_entries))
+
+
+def render_snapshot_table_with_delete(snapshots, base_currency, rates, snapshot_date):
+    """
+    Render snapshots in a tabular format with delete option
+    
+    Args:
+        snapshots: List of snapshot dictionaries
+        base_currency: Currency code for conversion
+        rates: Exchange rate dictionary
+        snapshot_date: Date object for the snapshot
+    """
+    if not snapshots:
+        return
+    
+    # Prepare table data
+    table_data = []
+    for snapshot in snapshots:
+        converted_value = get_converted_value(
+            snapshot["balance"],
+            snapshot["currency"],
+            base_currency,
+            rates
+        )
+        
+        # Check if this is a commodity account
+        is_commodity = snapshot["account_type"] == "Commodity"
+        
+        if is_commodity:
+            # For commodities, extract unit from account name
+            account_name = snapshot["name"]
+            unit = "units"
+            if "(" in account_name and ")" in account_name:
+                unit = account_name[account_name.rfind("(")+1:account_name.rfind(")")]
+            
+            # Show balance with unit instead of currency symbol
+            commodity_name = snapshot.get("commodity", snapshot["currency"])
+            row = {
+                'Owner': snapshot['owner'],
+                'Account': snapshot['name'],
+                'Type': snapshot['account_type'],
+                'Balance': f"{snapshot['balance']:,.2f} {unit}",
+                'Currency': commodity_name
+            }
+        else:
+            # For regular accounts, show currency symbol
+            acc_symbol = get_currency_symbol(snapshot['currency'])
+            base_symbol = get_currency_symbol(base_currency)
+            
+            row = {
+                'Owner': snapshot['owner'],
+                'Account': snapshot['name'],
+                'Type': snapshot['account_type'],
+                'Balance': f"{acc_symbol}{snapshot['balance']:,.2f}",
+                'Currency': snapshot['currency']
+            }
+        
+        # Add converted value if different currency
+        if snapshot['currency'] != base_currency:
+            base_symbol = get_currency_symbol(base_currency)
+            row[f'Value ({base_currency})'] = f"{base_symbol}{converted_value:,.2f}"
+        
+        table_data.append(row)
+    
+    # Display table
+    render_data_table(table_data)
+    
+    # Add delete button
+    st.write("")  # Spacing
+    if st.button("🗑️ Delete This Snapshot", type="secondary", use_container_width=True):
+        st.session_state.show_delete_dialog = True
+        st.session_state.delete_snapshot_date = snapshot_date
+        st.rerun()
 
 
 def apply_chart_theme(fig, colors, xaxis_title=None, yaxis_title=None, show_legend=False, legend_title=""):
@@ -451,6 +543,10 @@ def render_sidebar():
             st.session_state.settings_nav = "Accounts"
             st.rerun()
 
+        if st.button("🥇 Commodities", width="stretch"):
+            st.session_state.settings_nav = "Commodities"
+            st.rerun()
+
         if st.button("💱 Currencies", width="stretch"):
             st.session_state.settings_nav = "Currencies"
             st.rerun()
@@ -459,36 +555,16 @@ def render_sidebar():
             st.session_state.settings_nav = "Owners"
             st.rerun()
 
+        if st.button("💹 Exchange Rates", width="stretch"):
+            st.session_state.settings_nav = "Exchange Rates"
+            st.rerun()
+
         st.divider()
 
-        # Tools section (ascending order)
-        render_tool_button(
-            icon="📅",
-            label="Calendar Invite",
-            state_key="calendar_panel_open",
-            widget_renderer=render_calendar_widget
-        )
-
-        render_tool_button(
-            icon="🧮",
-            label="Calculator",
-            state_key="calculator_panel_open",
-            widget_renderer=render_calculator_widget
-        )
-
-        render_tool_button(
-            icon="📥",
-            label="Export Dashboard",
-            state_key="export_panel_open",
-            widget_renderer=render_export_widget
-        )
-
-        render_tool_button(
-            icon="💹",
-            label="Exchange Rate",
-            state_key="exchange_rate_panel_open",
-            widget_renderer=render_exchange_rate_widget_inline
-        )
+        # Tools section
+        if st.button("📅 Reminder", width="stretch"):
+            st.session_state.settings_nav = "Reminder"
+            st.rerun()
 
         page = st.session_state.settings_nav
 
@@ -535,6 +611,33 @@ def reset_sandbox():
 
 
 # Helper functions
+def has_multiple_currencies() -> bool:
+    """
+    Check if exchange rate functionality should be enabled.
+    
+    Exchange rates are enabled when:
+    - At least 1 currency AND 1 commodity is available, OR
+    - At least 2 currencies without any commodity, OR
+    - Both currency and commodity counts are more than 2
+    """
+    currency_count = db.get_currency_count()
+    commodity_count = db.get_commodity_count()
+    
+    # Case 1: At least 1 currency and 1 commodity
+    if currency_count >= 1 and commodity_count >= 1:
+        return True
+    
+    # Case 2: At least 2 currencies without any commodity
+    if currency_count >= 2 and commodity_count == 0:
+        return True
+    
+    # Case 3: Both currency and commodity are more than 2
+    if currency_count >= 2 and commodity_count >= 2:
+        return True
+    
+    return False
+
+
 def get_currency_symbol(currency):
     """Get currency symbol for display"""
     symbols = {
@@ -588,21 +691,110 @@ def calculate_total_net_worth(snapshots, base_currency):
 
     total = 0.0
     rates = None
-
+    
+    # Get exchange rates from first snapshot (all snapshots from same date should have same rates)
     for snapshot in snapshots:
         if snapshot.get("exchange_rates"):
             rates = json.loads(snapshot["exchange_rates"])
+            break
+    
+    # Fetch commodity prices if there are commodity accounts
+    commodity_accounts = [s for s in snapshots if s.get("account_type") == "Commodity"]
+    commodity_prices = {}
+    commodity_configs = {}
+    
+    if commodity_accounts and rates:
+        # Get snapshot date and unique commodities
+        snapshot_date_str = snapshots[0].get("snapshot_date")
+        commodity_list = [s.get("commodity") for s in commodity_accounts if s.get("commodity")]
+        unique_commodities = list(set([c for c in commodity_list if c is not None]))
+        
+        # Get enabled currencies from database
+        enabled_currencies = db.get_currency_codes()
+        
+        # Fetch commodity prices for the snapshot date (prices are per troy ounce)
+        if unique_commodities:
+            commodity_prices = CurrencyConverter.get_commodity_prices(
+                unique_commodities,
+                enabled_currencies,
+                date=snapshot_date_str
+            ) or {}
+            
+            # If historical prices not available, try to get latest prices as fallback
+            # Check if any commodity is missing prices for any enabled currency
+            needs_fallback = False
+            for commodity in unique_commodities:
+                if commodity not in commodity_prices:
+                    needs_fallback = True
+                    break
+                for currency in enabled_currencies:
+                    if currency not in commodity_prices.get(commodity, {}):
+                        needs_fallback = True
+                        break
+                if needs_fallback:
+                    break
+            
+            if needs_fallback:
+                latest_prices = CurrencyConverter.get_commodity_prices(
+                    unique_commodities,
+                    enabled_currencies,
+                    date=None  # Get latest prices
+                ) or {}
+                
+                # Merge latest prices for missing commodities/currencies
+                for commodity in unique_commodities:
+                    if commodity not in commodity_prices:
+                        commodity_prices[commodity] = {}
+                    if commodity in latest_prices:
+                        for currency in enabled_currencies:
+                            if currency not in commodity_prices[commodity] and currency in latest_prices[commodity]:
+                                commodity_prices[commodity][currency] = latest_prices[commodity][currency]
+            
+            # Get commodity configurations to know the units
+            commodity_configs = {c['name']: c for c in db.get_commodities()}
 
-        if rates:
-            converted = get_converted_value(
-                snapshot["balance"],
-                snapshot["currency"],
-                base_currency,
-                rates
-            )
-            total += converted
+    for snapshot in snapshots:
+        is_commodity = snapshot.get("account_type") == "Commodity"
+        
+        if is_commodity:
+            # For commodity accounts: quantity * price per unit in target currency
+            commodity_name = snapshot.get("commodity")
+            quantity = snapshot["balance"]
+            
+            # Get commodity price in base currency (API returns price per troy ounce)
+            if commodity_name and commodity_name in commodity_prices:
+                price_per_ounce = commodity_prices[commodity_name].get(base_currency, 0)
+                
+                # Get the unit for this commodity from database
+                commodity_unit = "ounce"  # Default to ounce
+                if commodity_name in commodity_configs:
+                    commodity_unit = commodity_configs[commodity_name].get('unit', 'ounce')
+                
+                # Convert price from per-ounce to per-unit
+                price_per_unit = CurrencyConverter.convert_commodity_unit(
+                    price_per_ounce,
+                    "ounce",  # API always returns per troy ounce
+                    commodity_unit  # Convert to the commodity's configured unit
+                )
+                
+                # Calculate total value: quantity * price per unit
+                converted = quantity * price_per_unit
+            else:
+                # Fallback: if no price available, use 0
+                converted = 0.0
         else:
-            total += snapshot["balance"]
+            # For regular accounts: use currency conversion
+            if rates:
+                converted = get_converted_value(
+                    snapshot["balance"],
+                    snapshot["currency"],
+                    base_currency,
+                    rates
+                )
+            else:
+                converted = snapshot["balance"]
+        
+        total += converted
 
     return total
 
@@ -667,7 +859,7 @@ def page_dashboard():
                 st.markdown(f"""
                 <div style="background-color: {colors['bg_secondary']}; padding: 20px; border-radius: 10px; border-left: 5px solid {currency['color']};">
                     <p style="margin: 0; font-size: 14px; color: {colors['text_secondary']};">{currency['flag_emoji']} {currency['code']}</p>
-                    <p style="margin: 0; font-size: 28px; font-weight: bold; color: {currency['color']};">{curr_symbol}{net_worth:,.2f}</p>
+                    <p style="margin: 0; font-size: 28px; font-weight: bold; color: {colors['text_primary']};">{curr_symbol}{net_worth:,.2f}</p>
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -693,25 +885,93 @@ def page_dashboard():
 
     if latest_snapshots:
         rates = json.loads(latest_snapshots[0]["exchange_rates"]) if latest_snapshots[0].get("exchange_rates") else {}
+        
+        # Fetch commodity prices for the snapshot date
+        snapshot_date_str = latest_snapshots[0]["snapshot_date"]
+        commodity_accounts = [s for s in latest_snapshots if s["account_type"] == "Commodity"]
+        commodity_prices = {}
+        commodity_configs = {}
+        
+        if commodity_accounts:
+            # Get unique commodities and enabled currencies
+            commodity_list = [s.get("commodity") for s in commodity_accounts if s.get("commodity")]
+            unique_commodities = list(set([c for c in commodity_list if c is not None]))  # Remove duplicates and None
+            enabled_currencies = db.get_currency_codes()
+            
+            # Fetch commodity prices for the snapshot date (prices are per troy ounce)
+            commodity_prices = CurrencyConverter.get_commodity_prices(
+                unique_commodities,
+                enabled_currencies,
+                date=snapshot_date_str
+            ) or {}
+            
+            # Get commodity configurations to know the units
+            commodity_configs = {c['name']: c for c in db.get_commodities()}
 
         breakdown_data = []
         total_converted = 0.0
 
         for snapshot in latest_snapshots:
-            converted_value = get_converted_value(
-                snapshot["balance"],
-                snapshot["currency"],
-                base_currency,
-                rates
-            )
+            is_commodity = snapshot["account_type"] == "Commodity"
+            
+            if is_commodity:
+                # For commodity accounts: quantity * price per unit in target currency
+                commodity_name = snapshot.get("commodity")
+                quantity = snapshot["balance"]
+                
+                # Get commodity price in base currency (API returns price per troy ounce)
+                if commodity_name and commodity_name in commodity_prices:
+                    price_per_ounce = commodity_prices[commodity_name].get(base_currency, 0)
+                    
+                    # Get the unit for this commodity from database
+                    commodity_unit = "ounce"  # Default to ounce
+                    if commodity_name in commodity_configs:
+                        commodity_unit = commodity_configs[commodity_name].get('unit', 'ounce')
+                    
+                    # Convert price from per-ounce to per-unit
+                    price_per_unit = CurrencyConverter.convert_commodity_unit(
+                        price_per_ounce,
+                        "ounce",  # API always returns per troy ounce
+                        commodity_unit  # Convert to the commodity's configured unit
+                    )
+                    
+                    # Calculate total value: quantity * price per unit
+                    converted_value = quantity * price_per_unit
+                else:
+                    # Fallback: if no price available, use 0
+                    converted_value = 0.0
+                    
+            else:
+                # For regular accounts: use currency conversion
+                converted_value = get_converted_value(
+                    snapshot["balance"],
+                    snapshot["currency"],
+                    base_currency,
+                    rates
+                )
+            
             total_converted += converted_value
 
+            # For commodity accounts, show commodity name instead of currency
+            native_currency_display = snapshot.get("commodity", snapshot["currency"]) if is_commodity else snapshot["currency"]
+            
+            # For commodity accounts, show balance without currency symbol (just the amount with unit)
+            if is_commodity:
+                # Extract unit from account name (e.g., "Gold (ounce)" -> "ounce")
+                account_name = snapshot["name"]
+                unit = "units"
+                if "(" in account_name and ")" in account_name:
+                    unit = account_name[account_name.rfind("(")+1:account_name.rfind(")")]
+                native_balance_display = f"{snapshot['balance']:,.2f} {unit}"
+            else:
+                native_balance_display = f"{get_currency_symbol(snapshot['currency'])}{snapshot['balance']:,.2f}"
+            
             breakdown_data.append({
                 "Account": snapshot["name"],
                 "Owner": snapshot["owner"],
                 "Type": snapshot["account_type"],
-                "Native Currency": snapshot["currency"],
-                "Native Balance": f"{get_currency_symbol(snapshot['currency'])}{snapshot['balance']:,.2f}",
+                "Native Currency": native_currency_display,
+                "Native Balance": native_balance_display,
                 f"{base_currency} Value": f"{get_currency_symbol(base_currency)}{converted_value:,.2f}"
             })
 
@@ -758,10 +1018,13 @@ def page_dashboard():
             month_label = f"{dt.strftime('%b').upper()}<br>{dt.year}"
             history_data.append({
                 "Month": month_label,
-                "Net Worth": net_worth
+                "Net Worth": net_worth,
+                "Date": snapshot_date  # Keep actual date for proper sorting
             })
 
         df_history = pd.DataFrame(history_data)
+        # Sort by actual date to ensure chronological order
+        df_history = df_history.sort_values('Date')
 
         # Build dynamic currency color map from database
         color_map = {}
@@ -805,7 +1068,10 @@ def page_dashboard():
                 title_font=dict(size=14, family='Arial, sans-serif', color=colors['plot_text'], weight='bold'),
                 showspikes=True,
                 spikecolor=colors['plot_axis'],
-                spikethickness=1
+                spikethickness=1,
+                type='category',  # Treat as categorical to preserve order
+                categoryorder='array',  # Use array order
+                categoryarray=df_history['Month'].tolist()  # Explicit order from sorted data
             ),
             yaxis=dict(
                 showline=True,
@@ -831,7 +1097,7 @@ def page_dashboard():
                 font_color=colors['text_primary']
             )
         )
-        st.plotly_chart(fig_line, width="stretch")
+        st.plotly_chart(fig_line, use_container_width=True)
         st.markdown(
             '<p style="text-align: right; font-size: 0.6rem; margin-top: -10px;">* Monthly exchange rates are derived from rates effective on the 1st of each month</p>',
             unsafe_allow_html=True
@@ -967,7 +1233,7 @@ def page_dashboard():
                 font=dict(color=colors['text_primary'])
             )
         )
-        st.plotly_chart(fig_split, width="stretch")
+        st.plotly_chart(fig_split, use_container_width=True)
         st.divider()
 
         # Year-over-year comparison if we have enough data
@@ -1084,7 +1350,7 @@ def page_dashboard():
                     font=dict(color=colors['text_primary'])
                 )
             )
-            st.plotly_chart(fig_yoy, width="stretch")
+            st.plotly_chart(fig_yoy, use_container_width=True)
             st.markdown(
                 '<p style="text-align: right; font-size: 0.6rem; margin-top: -10px;">* Monthly exchange rates are derived from rates effective on the 1st of each month</p>',
                 unsafe_allow_html=True
@@ -1098,6 +1364,9 @@ def page_dashboard():
 def page_accounts():
     st.title("Manage Accounts")
 
+    # Unit options for commodity accounts
+    UNIT_OPTIONS = ["gram", "ounce", "kilo"]
+
     # Show success message if account was just added
     show_success_toast('account')
 
@@ -1107,6 +1376,7 @@ def page_accounts():
     accounts = db.get_accounts()
     owner_names = db.get_owner_names()
     currency_codes = db.get_currency_codes()
+    commodity_list = db.get_commodities()
 
     if accounts:
         # Group accounts by owner for better organization
@@ -1122,20 +1392,35 @@ def page_accounts():
 
             for account in accounts_by_owner[owner_name]:
                 # Create expandable section for each account
-                account_icon = "🏦" if account['account_type'] == "Bank" else "📈" if account['account_type'] == "Investment" else "💼"
-                with st.expander(f"{account_icon} {account['name']} - {account['currency']}", expanded=False):
+                is_commodity = account['account_type'] == "Commodity"
+                account_icon = "🏦" if account['account_type'] == "Bank" else "📈" if account['account_type'] == "Investment" else "🥇" if is_commodity else "💼"
+                display_label = account.get('commodity', account['currency']) if is_commodity else account['currency']
+                with st.expander(f"{account_icon} {account['name']} - {display_label}", expanded=False):
                     st.write(f"**Type:** {account['account_type']}")
-                    st.write(f"**Currency:** {account['currency']}")
+                    if is_commodity:
+                        st.write(f"**Commodity:** {account.get('commodity', 'N/A')}")
+                    else:
+                        st.write(f"**Currency:** {account['currency']}")
 
                     st.write("**Edit Account:**")
                     col1, col2 = st.columns(2)
 
                     with col1:
-                        new_name = st.text_input(
-                            "Account Name",
-                            value=account['name'],
-                            key=f"name_{account['id']}"
-                        )
+                        # For commodity accounts, name is uneditable
+                        if is_commodity:
+                            new_name = st.text_input(
+                                "Account Name",
+                                value=account['name'],
+                                key=f"name_{account['id']}",
+                                disabled=True,
+                                help="Commodity account names are auto-generated"
+                            )
+                        else:
+                            new_name = st.text_input(
+                                "Account Name",
+                                value=account['name'],
+                                key=f"name_{account['id']}"
+                            )
                         owner_index = owner_names.index(account['owner']) if account['owner'] in owner_names else 0
                         new_owner = st.selectbox(
                             "Owner",
@@ -1145,7 +1430,7 @@ def page_accounts():
                         )
 
                     with col2:
-                        type_options = ["Bank", "Investment", "Other"]
+                        type_options = ["Bank", "Investment", "Commodity", "Other"]
                         type_index = type_options.index(account['account_type']) if account['account_type'] in type_options else 0
                         new_type = st.selectbox(
                             "Account Type",
@@ -1153,22 +1438,60 @@ def page_accounts():
                             index=type_index,
                             key=f"type_{account['id']}"
                         )
-                        curr_index = currency_codes.index(account['currency']) if account['currency'] in currency_codes else 0
-                        new_currency = st.selectbox(
-                            "Currency",
-                            currency_codes,
-                            index=curr_index,
-                            key=f"currency_{account['id']}"
-                        )
+                        
+                        # Show currency or commodity dropdown based on account type
+                        if new_type == "Commodity":
+                            commodity_names = [c['name'] for c in commodity_list]
+                            current_commodity = account.get('commodity', commodity_names[0] if commodity_names else '')
+                            comm_index = commodity_names.index(current_commodity) if current_commodity in commodity_names else 0
+                            new_commodity = st.selectbox(
+                                "Commodity",
+                                commodity_names,
+                                index=comm_index,
+                                key=f"commodity_{account['id']}"
+                            )
+                            
+                            # Extract unit from account name (format: "Gold (ounce)")
+                            current_unit = "ounce"  # default
+                            if '(' in account['name'] and ')' in account['name']:
+                                unit_part = account['name'].split('(')[1].split(')')[0]
+                                if unit_part in UNIT_OPTIONS:
+                                    current_unit = unit_part
+                            
+                            unit_index = UNIT_OPTIONS.index(current_unit) if current_unit in UNIT_OPTIONS else 1
+                            new_unit = st.selectbox(
+                                "Unit",
+                                UNIT_OPTIONS,
+                                index=unit_index,
+                                key=f"unit_{account['id']}"
+                            )
+                            new_currency = ""  # Empty for commodity accounts
+                        else:
+                            curr_index = currency_codes.index(account['currency']) if account['currency'] in currency_codes else 0
+                            new_currency = st.selectbox(
+                                "Currency",
+                                currency_codes,
+                                index=curr_index,
+                                key=f"currency_{account['id']}"
+                            )
+                            new_commodity = None
+                            new_unit = None
 
                     # Update button
                     if st.button(f"💾 Update Account", key=f"update_btn_{account['id']}", width="stretch"):
-                        if new_name:
-                            db.update_account(account['id'], new_name, new_owner, new_type, new_currency)
+                        if new_type == "Commodity":
+                            # Auto-generate name for commodity accounts with unit
+                            auto_name = f"{new_commodity} ({new_unit})"
+                            db.update_account(account['id'], auto_name, new_owner, new_type, "", new_commodity)
                             st.success(f"Account updated!")
                             st.rerun()
                         else:
-                            st.error("Please enter an account name")
+                            if new_name:
+                                db.update_account(account['id'], new_name, new_owner, new_type, new_currency, None)
+                                st.success(f"Account updated!")
+                                st.rerun()
+                            else:
+                                st.error("Please enter an account name")
 
                     st.divider()
 
@@ -1192,23 +1515,54 @@ def page_accounts():
     else:
         col1, col2 = st.columns(2)
 
+        # Initialize variables
+        account_name = ""
+        currency = ""
+        selected_commodity = None
+        auto_account_name = None
+        selected_commodity = None
+        
         with col1:
-            account_name = st.text_input("Account Name", placeholder="e.g., TD Chequing", key="add_account_name")
+            # Account type selector first to determine what to show
+            account_type = st.selectbox("Account Type", ["Bank", "Investment", "Commodity", "Other"], key="add_account_type")
             owner = st.selectbox("Owner", owner_names, key="add_account_owner")
 
         with col2:
-            account_type = st.selectbox("Account Type", ["Bank", "Investment", "Other"], key="add_account_type")
-            currency = st.selectbox("Currency", currency_codes, key="add_account_currency")
+            # Show currency or commodity dropdown based on account type
+            if account_type == "Commodity":
+                commodity_names = [c['name'] for c in commodity_list]
+                if commodity_names:
+                    selected_commodity = st.selectbox("Commodity", commodity_names, key="add_account_commodity")
+                    selected_unit = st.selectbox("Unit", UNIT_OPTIONS, index=1, key="add_account_unit")  # Default to "ounce"
+                    # Auto-generate account name with unit
+                    auto_account_name = f"{selected_commodity} ({selected_unit})"
+                    st.text_input("Account Name", value=auto_account_name, key="add_account_name_display", disabled=True, help="Auto-generated for commodity accounts")
+                else:
+                    st.warning("No commodities available. Please add commodities first!")
+                    selected_unit = None
+            else:
+                account_name = st.text_input("Account Name", placeholder="e.g., TD Chequing", key="add_account_name")
+                currency = st.selectbox("Currency", currency_codes, key="add_account_currency")
+                selected_unit = None
 
         # Add button
         if st.button("➕ Add Account", width="stretch", type="primary", key="add_account_btn"):
-            if account_name:
-                db.add_account(account_name, owner, account_type, currency)
-                st.session_state.account_added = True
-                st.session_state.added_account_name = account_name
-                st.rerun()
+            if account_type == "Commodity":
+                if selected_commodity and auto_account_name:
+                    db.add_account(auto_account_name, owner, account_type, "", selected_commodity)
+                    st.session_state.account_added = True
+                    st.session_state.added_account_name = auto_account_name
+                    st.rerun()
+                else:
+                    st.error("Please select a commodity")
             else:
-                st.error("Please enter an account name")
+                if account_name:
+                    db.add_account(account_name, owner, account_type, currency)
+                    st.session_state.account_added = True
+                    st.session_state.added_account_name = account_name
+                    st.rerun()
+                else:
+                    st.error("Please enter an account name")
 
 
 # Page: Update Balances
@@ -1227,6 +1581,10 @@ def page_update_balances():
         st.session_state.show_save_dialog = False
     if 'save_snapshot_data' not in st.session_state:
         st.session_state.save_snapshot_data = None
+    if 'show_delete_dialog' not in st.session_state:
+        st.session_state.show_delete_dialog = False
+    if 'delete_snapshot_date' not in st.session_state:
+        st.session_state.delete_snapshot_date = None
 
     # Show success message if save was just completed
     if st.session_state.get('snapshot_saved', False):
@@ -1266,17 +1624,33 @@ def page_update_balances():
 
     table_data = []
     for account in accounts:
+        # For commodity accounts, show commodity name; otherwise show currency
+        is_commodity = account['account_type'] == "Commodity"
+        display_currency = account.get('commodity', account['currency']) if is_commodity else account['currency']
+        
+        # Extract unit for commodity accounts
+        unit = ""
+        if is_commodity:
+            account_name = account['name']
+            if "(" in account_name and ")" in account_name:
+                unit = account_name[account_name.rfind("(")+1:account_name.rfind(")")]
+        
         row = {
             'Owner': account['owner'],
             'Account': account['name'],
-            'Currency': account['currency'],
+            'Currency': display_currency,
         }
 
-        # Add previous 3 months
+        # Add previous 3 months with unit or currency symbol
         for prev_date in reversed(prev_months):  # Show oldest to newest
             month_label = prev_date.strftime("%b %Y")
             if account['id'] in prev_month_data and prev_date in prev_month_data[account['id']]:
-                row[month_label] = f"{prev_month_data[account['id']][prev_date]:,.2f}"
+                balance_value = prev_month_data[account['id']][prev_date]
+                if is_commodity and unit:
+                    row[month_label] = f"{balance_value:,.2f} {unit}"
+                else:
+                    currency_symbol = get_currency_symbol(account['currency'])
+                    row[month_label] = f"{currency_symbol}{balance_value:,.2f}"
             else:
                 row[month_label] = "N/A"
 
@@ -1362,11 +1736,30 @@ def page_update_balances():
                             rates
                         )
 
-                        acc_symbol = get_currency_symbol(snapshot['currency'])
-                        entry = (
-                            f"    • {snapshot['name']} ({snapshot['account_type']}): "
-                            f"`{acc_symbol}{snapshot['balance']:,.2f}` {snapshot['currency']}"
-                        )
+                        # Check if this is a commodity account
+                        is_commodity = snapshot["account_type"] == "Commodity"
+                        
+                        if is_commodity:
+                            # For commodities, extract unit from account name
+                            account_name = snapshot["name"]
+                            unit = "units"
+                            if "(" in account_name and ")" in account_name:
+                                unit = account_name[account_name.rfind("(")+1:account_name.rfind(")")]
+                            
+                            # Show balance with unit instead of currency symbol
+                            commodity_name = snapshot.get("commodity", snapshot["currency"])
+                            entry = (
+                                f"    • {snapshot['name']} ({snapshot['account_type']}): "
+                                f"`{snapshot['balance']:,.2f} {unit}` {commodity_name}"
+                            )
+                        else:
+                            # For regular accounts, show currency symbol
+                            acc_symbol = get_currency_symbol(snapshot['currency'])
+                            entry = (
+                                f"    • {snapshot['name']} ({snapshot['account_type']}): "
+                                f"`{acc_symbol}{snapshot['balance']:,.2f}` {snapshot['currency']}"
+                            )
+                        
                         if snapshot['currency'] != base_currency:
                             entry += f" = `{currency_symbol}{converted_value:,.2f}` {base_currency}"
 
@@ -1378,13 +1771,24 @@ def page_update_balances():
             st.divider()
 
     # Fetch exchange rates for the selected date
-    with st.spinner("Fetching exchange rates..."):
-        enabled_currencies = db.get_currency_codes()
-        exchange_rates = CurrencyConverter.get_all_cross_rates(enabled_currencies, snapshot_date.isoformat())
+    enabled_currencies = db.get_currency_codes()
+    
+    # If only one currency is enabled, no need to fetch exchange rates
+    if len(enabled_currencies) == 1:
+        # Create a simple rate dictionary with the single currency
+        single_currency = enabled_currencies[0]
+        exchange_rates = {f"{single_currency}_{single_currency}": 1.0}
+    else:
+        # Multiple currencies - fetch exchange rates from API
+        with st.spinner("Fetching exchange rates..."):
+            exchange_rates = CurrencyConverter.get_all_cross_rates(enabled_currencies, snapshot_date.isoformat())
 
-    if not exchange_rates:
-        st.error("Unable to fetch exchange rates. Please check your internet connection.")
-        return
+        if not exchange_rates:
+            st.warning("⚠️ Unable to fetch live exchange rates. Using fallback rates.")
+            exchange_rates = CurrencyConverter._get_fallback_rates(enabled_currencies)
+            if not exchange_rates:
+                st.error("Unable to generate exchange rates. Please try again later.")
+                return
 
     # Get existing snapshot data if it exists for pre-filling the form
     existing_snapshot_data = {}
@@ -1428,8 +1832,21 @@ def page_update_balances():
                                     if most_recent in prev_month_data[account['id']]:
                                         default_val = float(prev_month_data[account['id']][most_recent])
 
+                                # Determine label based on account type
+                                is_commodity = account['account_type'] == "Commodity"
+                                if is_commodity:
+                                    # Extract unit from account name
+                                    account_name = account['name']
+                                    unit = "units"
+                                    if "(" in account_name and ")" in account_name:
+                                        unit = account_name[account_name.rfind("(")+1:account_name.rfind(")")]
+                                    commodity_name = account.get('commodity', account['currency'])
+                                    label = f"{account['name']} ({unit})"
+                                else:
+                                    label = f"{account['name']} ({account['currency']})"
+
                                 balance = st.number_input(
-                                    f"{account['name']} ({account['currency']})",
+                                    label,
                                     min_value=0.0,
                                     value=default_val,
                                     step=100.0,
@@ -1503,6 +1920,44 @@ def page_update_balances():
                     st.rerun()
 
         confirm_save()
+    
+    # Show delete confirmation dialog
+    if st.session_state.show_delete_dialog and st.session_state.delete_snapshot_date:
+        delete_date = st.session_state.delete_snapshot_date
+        
+        @st.dialog("Confirm Delete")
+        def confirm_delete():
+            month_name = month_names[delete_date.month - 1]
+            year = delete_date.year
+            
+            st.write(f"**Delete snapshot for {month_name} {year}?**")
+            st.warning("⚠️ This action cannot be undone. All balance data for this month will be permanently deleted.")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("🗑️ Delete", type="primary", use_container_width=True):
+                    # Delete all snapshots for this date
+                    db.delete_snapshots_by_date(delete_date)
+                    
+                    # Set success flag
+                    st.session_state.snapshot_deleted = True
+                    st.session_state.deleted_month_name = month_name
+                    st.session_state.deleted_year = year
+                    
+                    # Clear dialog state
+                    st.session_state.show_delete_dialog = False
+                    st.session_state.delete_snapshot_date = None
+                    
+                    st.rerun()
+            
+            with col2:
+                if st.button("❌ Cancel", use_container_width=True):
+                    st.session_state.show_delete_dialog = False
+                    st.session_state.delete_snapshot_date = None
+                    st.rerun()
+        
+        confirm_delete()
 
 
 # Page: History
@@ -1594,11 +2049,30 @@ def page_history():
                                 rates
                             )
 
-                            acc_symbol = get_currency_symbol(snapshot['currency'])
-                            entry = (
-                                f"    • {snapshot['name']} ({snapshot['account_type']}): "
-                                f"`{acc_symbol}{snapshot['balance']:,.2f}` {snapshot['currency']}"
-                            )
+                            # Check if this is a commodity account
+                            is_commodity = snapshot["account_type"] == "Commodity"
+                            
+                            if is_commodity:
+                                # For commodities, extract unit from account name
+                                account_name = snapshot["name"]
+                                unit = "units"
+                                if "(" in account_name and ")" in account_name:
+                                    unit = account_name[account_name.rfind("(")+1:account_name.rfind(")")]
+                                
+                                # Show balance with unit instead of currency symbol
+                                commodity_name = snapshot.get("commodity", snapshot["currency"])
+                                entry = (
+                                    f"    • {snapshot['name']} ({snapshot['account_type']}): "
+                                    f"`{snapshot['balance']:,.2f} {unit}` {commodity_name}"
+                                )
+                            else:
+                                # For regular accounts, show currency symbol
+                                acc_symbol = get_currency_symbol(snapshot['currency'])
+                                entry = (
+                                    f"    • {snapshot['name']} ({snapshot['account_type']}): "
+                                    f"`{acc_symbol}{snapshot['balance']:,.2f}` {snapshot['currency']}"
+                                )
+                            
                             if snapshot['currency'] != base_currency:
                                 entry += f" = `{currency_symbol}{converted_value:,.2f}` {base_currency}"
 
@@ -1630,71 +2104,244 @@ def page_history():
 
 # Page: Exchange Rates
 def page_exchange_rates():
-    st.caption("View current and historical exchange rates for supported currencies")
+    st.title("💹 Exchange Rates")
+    st.caption("View today's live exchange rates for supported currencies and commodities")
+    
+    # Check if multiple currencies exist
+    if not has_multiple_currencies():
+        st.info("💡 Exchange rates are not available with the current configuration.")
+        st.write("To enable exchange rate functionality, you need:")
+        st.write("- At least 1 currency AND 1 commodity, OR")
+        st.write("- At least 2 currencies (without commodities), OR")
+        st.write("- More than 2 currencies AND more than 2 commodities")
+        st.write("\nConfigure currencies and commodities in the settings to enable this feature.")
+        return
 
-    # Date selector
+    # Date selector - allows viewing historical rates
     current_date = date.today()
     selected_date = st.date_input(
         "Select Date",
         value=current_date,
         max_value=current_date,
-        help="View exchange rates for a specific date"
+        disabled=False,
+        help="Select a date to view historical exchange rates and commodity prices. Frankfurter API supports historical data from 1999 onwards."
     )
+    
+    # Convert date to string format for API (YYYY-MM-DD)
+    date_str = selected_date.strftime('%Y-%m-%d') if selected_date != current_date else None
 
     st.divider()
 
-    # Fetch exchange rates
-    with st.spinner("Fetching exchange rates..."):
+    # Fetch exchange rates for selected date
+    with st.spinner(f"Fetching exchange rates for {selected_date.strftime('%B %d, %Y')}..."):
         enabled_currencies = db.get_currency_codes()
-        exchange_rates = CurrencyConverter.get_all_cross_rates(enabled_currencies, selected_date.isoformat())
+        exchange_rates = CurrencyConverter.get_all_cross_rates(enabled_currencies, date=date_str)
 
     if not exchange_rates:
-        st.error("Unable to fetch exchange rates. Please check your internet connection.")
-        return
+        st.error("⚠️ Unable to fetch live exchange rates from API. Using fallback rates.")
+        st.info("💡 Fallback rates are approximate values. For accurate rates, please check your internet connection and try again.")
+        # Get fallback rates
+        exchange_rates = CurrencyConverter._get_fallback_rates(enabled_currencies)
+        if not exchange_rates:
+            st.error("Unable to generate exchange rates. Please try again later.")
+            return
+        rates_source = "Fallback"
+    else:
+        rates_source = "Live API"
 
-    st.success(f"✅ Exchange rates for {selected_date.strftime('%B %d, %Y')}")
+    date_label = "Today's live" if selected_date == current_date else "Historical"
+    st.success(f"✅ {date_label} exchange rates for {selected_date.strftime('%B %d, %Y')} ({rates_source})")
 
     st.divider()
 
-    # Display exchange rates in a grid
-    st.subheader("Currency Exchange Rates")
+    # Display exchange rates dynamically for all saved currencies
+    st.subheader("💱 Currency Exchange Rates")
+    
+    # Get all saved currencies with their details
+    currencies = db.get_currencies()
+    
+    if len(currencies) < 2:
+        st.info("Add more currencies to see exchange rates between them.")
+    else:
+        # Create a grid layout based on number of currencies
+        num_currencies = len(currencies)
+        
+        # Display rates in a table format
+        st.write("**All Currency Pairs:**")
+        
+        # Create columns for better layout
+        cols_per_row = 3
+        rate_pairs = []
+        
+        # Generate all currency pairs
+        for i, from_curr in enumerate(currencies):
+            for j, to_curr in enumerate(currencies):
+                if i != j:  # Don't show same currency conversions
+                    from_code = from_curr['code']
+                    to_code = to_curr['code']
+                    rate_key = f"{from_code}_{to_code}"
+                    rate_value = exchange_rates.get(rate_key, "N/A")
+                    
+                    rate_pairs.append({
+                        'from': from_code,
+                        'from_emoji': from_curr['flag_emoji'],
+                        'to': to_code,
+                        'to_emoji': to_curr['flag_emoji'],
+                        'rate': rate_value
+                    })
+        
+        # Display in columns
+        for idx in range(0, len(rate_pairs), cols_per_row):
+            cols = st.columns(cols_per_row)
+            for col_idx, col in enumerate(cols):
+                pair_idx = idx + col_idx
+                if pair_idx < len(rate_pairs):
+                    pair = rate_pairs[pair_idx]
+                    with col:
+                        if isinstance(pair['rate'], (int, float)):
+                            st.metric(
+                                f"{pair['from_emoji']} {pair['from']} → {pair['to_emoji']} {pair['to']}",
+                                f"{pair['rate']:.4f}"
+                            )
+                        else:
+                            st.metric(
+                                f"{pair['from_emoji']} {pair['from']} → {pair['to_emoji']} {pair['to']}",
+                                pair['rate']
+                            )
 
-    rates_display = {
-        "USD to CAD": exchange_rates.get("USD_CAD", "N/A"),
-        "USD to INR": exchange_rates.get("USD_INR", "N/A"),
-        "CAD to USD": exchange_rates.get("CAD_USD", "N/A"),
-        "CAD to INR": exchange_rates.get("CAD_INR", "N/A"),
-        "INR to USD": exchange_rates.get("INR_USD", "N/A"),
-        "INR to CAD": exchange_rates.get("INR_CAD", "N/A"),
-    }
+    st.divider()
 
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.metric("USD → CAD", f"{rates_display['USD to CAD']:.4f}")
-        st.metric("CAD → USD", f"{rates_display['CAD to USD']:.4f}")
-
-    with col2:
-        st.metric("USD → INR", f"{rates_display['USD to INR']:.4f}")
-        st.metric("INR → USD", f"{rates_display['INR to USD']:.4f}")
-
-    with col3:
-        st.metric("CAD → INR", f"{rates_display['CAD to INR']:.4f}")
-        st.metric("INR → CAD", f"{rates_display['INR to CAD']:.4f}")
+    # Display commodities section with prices
+    st.subheader("🥇 Commodity Prices")
+    
+    commodities = db.get_commodities()
+    
+    if not commodities:
+        st.info("No commodities configured yet. Add commodities in the **Commodities** settings.")
+    else:
+        # Unit selector dropdown
+        unit_options = ["ounce", "gram", "kilogram", "pound", "ton"]
+        
+        # Initialize session state for selected unit if not exists
+        if "commodity_display_unit" not in st.session_state:
+            st.session_state.commodity_display_unit = "ounce"
+        
+        # Unit selector
+        col_unit1, col_unit2 = st.columns([1, 3])
+        with col_unit1:
+            selected_unit = st.selectbox(
+                "Display Unit",
+                options=unit_options,
+                index=unit_options.index(st.session_state.commodity_display_unit),
+                key="page_unit_selector",
+                help="Select the unit for displaying commodity prices"
+            )
+        
+        # Update session state if unit changed
+        if selected_unit != st.session_state.commodity_display_unit:
+            st.session_state.commodity_display_unit = selected_unit
+            st.rerun()
+        
+        st.write("")  # Add spacing
+        
+        # Fetch commodity prices for selected date
+        commodity_names = [c['name'] for c in commodities]
+        
+        with st.spinner(f"Fetching commodity prices for {selected_date.strftime('%B %d, %Y')}..."):
+            commodity_prices = CurrencyConverter.get_commodity_prices(commodity_names, enabled_currencies, date=date_str)
+        
+        if commodity_prices:
+            st.write(f"**Current Commodity Prices (per {selected_unit}):**")
+            
+            # Display each commodity with its prices in different currencies
+            for commodity in commodities:
+                commodity_name = commodity['name']
+                
+                if commodity_name in commodity_prices:
+                    st.markdown(f"### {commodity['symbol']} {commodity_name}")
+                    
+                    # Display prices in columns
+                    cols_per_row = min(3, len(enabled_currencies))
+                    prices = commodity_prices[commodity_name]
+                    
+                    currency_list = list(prices.keys())
+                    for idx in range(0, len(currency_list), cols_per_row):
+                        cols = st.columns(cols_per_row)
+                        for col_idx, col in enumerate(cols):
+                            curr_idx = idx + col_idx
+                            if curr_idx < len(currency_list):
+                                currency_code = currency_list[curr_idx]
+                                # Get base price (per ounce from API)
+                                base_price = prices[currency_code]
+                                
+                                # Convert price to selected unit
+                                converted_price = CurrencyConverter.convert_commodity_unit(
+                                    base_price,
+                                    "ounce",  # API returns prices per ounce
+                                    selected_unit
+                                )
+                                
+                                # Get currency details for emoji
+                                curr_details = db.get_currency_by_code(currency_code)
+                                emoji = curr_details['flag_emoji'] if curr_details else ""
+                                
+                                with col:
+                                    st.metric(
+                                        f"{emoji} {currency_code}",
+                                        f"{converted_price:,.2f}",
+                                        help=f"Price per {selected_unit} in {currency_code}"
+                                    )
+                    
+                    st.write("")  # Spacing
+        else:
+            st.warning("⚠️ Unable to fetch commodity prices. Using configured commodities only.")
+            st.write("**Configured Commodities:**")
+            
+            # Display commodities in a grid without prices
+            cols_per_row = 3
+            for idx in range(0, len(commodities), cols_per_row):
+                cols = st.columns(cols_per_row)
+                for col_idx, col in enumerate(cols):
+                    comm_idx = idx + col_idx
+                    if comm_idx < len(commodities):
+                        commodity = commodities[comm_idx]
+                        with col:
+                            st.markdown(
+                                f"""
+                                <div style="padding: 1rem; border-radius: 0.5rem; background-color: {commodity['color']}20; border: 2px solid {commodity['color']};">
+                                    <div style="font-size: 2rem; text-align: center;">{commodity['symbol']}</div>
+                                    <div style="font-weight: bold; text-align: center; margin-top: 0.5rem;">{commodity['name']}</div>
+                                </div>
+                                """,
+                                unsafe_allow_html=True
+                            )
+        
+        st.info("💡 **Note:** Commodity prices are fetched from live market data and displayed per troy ounce by default. Use the unit selector above to view prices in different units (gram, kilogram, pound, ton). When multiple currencies are configured, prices are calculated using current exchange rates.")
 
     st.divider()
 
     # Exchange rate information
-    with st.expander("ℹ️ About Exchange Rates"):
+    with st.expander("ℹ️ About Exchange Rates & Commodity Prices"):
         st.write("""
-        **Source:** Exchange rates are fetched from the frankfurter.app API
+        **Source:** Exchange rates and commodity prices are fetched from the Frankfurter API (v2)
 
         **Update Frequency:** Rates are updated daily
 
+        **Historical Data:** You can view historical exchange rates and commodity prices by selecting a past date.
+        The Frankfurter API provides historical data from 1999 onwards for currencies, and from 2005 onwards for Gold (XAU),
+        2019 onwards for Silver (XAG), and 2026 onwards for Platinum (XPT) and Palladium (XPD).
+        
+        **Weekend/Holiday Handling:** When you select a weekend or holiday date, the API automatically returns the last working day's prices.
+
+        **Commodity Pricing:**
+        - All commodity prices from the API are per **troy ounce** (the standard unit for precious metals)
+        - 1 troy ounce = 31.1035 grams
+        - When you change the display unit, prices are automatically converted from troy ounces
+        - For multiple currencies, the base price is fetched from the API, then converted to other currencies using exchange rates
+
         **Usage:** These rates are automatically used when calculating net worth across different currencies
 
-        **Historical Rates:** You can view historical rates by selecting past dates. The same rates
-        are stored with each snapshot to ensure accurate historical calculations.
+        **Supported Commodities:** Gold (XAU), Silver (XAG), Platinum (XPT), and Palladium (XPD) are supported directly through the Frankfurter API.
         """)
 
 
@@ -1911,6 +2558,172 @@ def page_currencies():
     """)
 
 
+def page_commodities():
+    st.title("Manage Commodities")
+
+    # Commodity metadata - Only Gold and Silver are supported
+    AVAILABLE_COMMODITIES = {
+        "Gold": {"symbol": "🥇", "description": "Precious metal - Gold"},
+        "Silver": {"symbol": "🥈", "description": "Precious metal - Silver"},
+    }
+    
+    # Theme-friendly colors (work well in both light and dark mode)
+    COLOR_OPTIONS = {
+        "Gold": "#FFD700",
+        "Silver": "#C0C0C0",
+        "Copper": "#B87333",
+        "Crimson Red": "#DC143C",
+        "Navy Blue": "#003366",
+        "Dark Orange": "#FF8C00",
+        "Forest Green": "#228B22",
+        "Purple": "#8B008B",
+        "Teal": "#008080",
+        "Maroon": "#800000",
+        "Olive": "#808000",
+        "Steel Blue": "#4682B4",
+    }
+
+    # Show success message if commodity was just added
+    if st.session_state.get('commodity_added', False):
+        commodity_name = st.session_state.get('added_commodity_name', '')
+        st.toast(f"Commodity '{commodity_name}' added successfully!", icon="🥇")
+        st.session_state.commodity_added = False
+
+    # Get enabled commodities
+    enabled_commodities = db.get_commodities()
+    enabled_names = [c['name'] for c in enabled_commodities]
+    commodity_count = len(enabled_commodities)
+
+    st.info(f"**{commodity_count}/2 commodities enabled** (Minimum: 0, Maximum: 2)")
+
+    st.divider()
+
+    # Show enabled commodities with inline editing and removal
+    st.subheader("Enabled Commodities")
+
+    if enabled_commodities:
+        for comm in enabled_commodities:
+            commodity_desc = AVAILABLE_COMMODITIES.get(comm['name'], {}).get('description', comm['name'])
+            is_in_use = db.commodity_in_use(comm['name'])
+            in_use_text = "Yes" if is_in_use else "No"
+
+            # Create expandable section for each commodity
+            with st.expander(f"{comm['symbol']} {comm['name']} - {commodity_desc}", expanded=False):
+                st.write(f"**In Use:** {in_use_text}")
+
+                st.write("**Change Color:**")
+                col1, col2, col3 = st.columns([2, 3, 2])
+
+                with col1:
+                    # Current color preview - aligned with dropdown center
+                    st.markdown("<div style='text-align: center;'>Current</div>", unsafe_allow_html=True)
+                    st.markdown(
+                        f"<div style='width: 40px; height: 40px; background-color: {comm['color']}; "
+                        f"border-radius: 50%; border: 2px solid #666; margin-left: auto; margin-right: auto;'></div>",
+                        unsafe_allow_html=True
+                    )
+
+                with col2:
+                    # Color selector
+                    new_color = st.selectbox(
+                        "Select Color",
+                        list(COLOR_OPTIONS.keys()),
+                        key=f"color_select_{comm['id']}"
+                    )
+
+                with col3:
+                    # New color preview - aligned with dropdown center
+                    st.markdown("<div style='text-align: center;'>New</div>", unsafe_allow_html=True)
+                    new_color_value = COLOR_OPTIONS[new_color]
+                    st.markdown(
+                        f"<div style='width: 40px; height: 40px; background-color: {new_color_value}; "
+                        f"border-radius: 50%; border: 2px solid #666; margin-left: auto; margin-right: auto;'></div>",
+                        unsafe_allow_html=True
+                    )
+
+                # Update button
+                if st.button(f"🎨 Update Color", key=f"update_btn_{comm['id']}", width="stretch"):
+                    success = db.update_commodity_color(comm['id'], new_color_value)
+                    if success:
+                        st.success(f"Color updated!")
+                        st.rerun()
+                    else:
+                        st.error("Failed to update color")
+
+                st.divider()
+
+                # Remove commodity button
+                if is_in_use:
+                    st.warning(f"Cannot remove {comm['name']} - it's currently used by existing accounts.")
+                else:
+                    if st.button(f"🗑️ Remove {comm['name']}", key=f"remove_btn_{comm['id']}", width="stretch", type="secondary"):
+                        success = db.delete_commodity(comm['id'])
+                        if success:
+                            st.success(f"Commodity {comm['name']} removed!")
+                            st.rerun()
+                        else:
+                            st.error("Failed to remove commodity")
+    else:
+        st.warning("No commodities enabled!")
+
+    # Add new commodity section
+    if commodity_count < 2:  # Only allow adding if less than 2 commodities
+        st.subheader("Add New Commodity")
+
+        # Filter out already enabled commodities
+        available_to_add = {k: v for k, v in AVAILABLE_COMMODITIES.items() if k not in enabled_names}
+
+        if available_to_add:
+            col1, col2, col3 = st.columns([2, 2, 1])
+
+            with col1:
+                # Commodity selector
+                commodity_options = [f"{v['symbol']} {k} - {v['description']}" for k, v in sorted(available_to_add.items())]
+                selected = st.selectbox("Select Commodity", commodity_options, key="add_commodity_selector")
+
+                # Extract commodity name from selection
+                selected_name = selected.split()[1] if selected else None
+
+            with col2:
+                # Color selector
+                color_name = st.selectbox("Select Color", list(COLOR_OPTIONS.keys()), key="add_color_selector")
+                color_value = COLOR_OPTIONS[color_name]
+
+            with col3:
+                # Color preview - aligned with dropdown center
+                st.markdown("<div style='text-align: center;'>Preview</div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div style='width: 40px; height: 40px; background-color: {color_value}; "
+                    f"border-radius: 50%; border: 2px solid #666; margin-left: auto; margin-right: auto;'></div>",
+                    unsafe_allow_html=True
+                )
+
+            # Add button with proper spacing
+            if st.button("➕ Add Commodity", width="stretch", type="primary", key="add_commodity_btn"):
+                if selected_name:
+                    symbol = AVAILABLE_COMMODITIES[selected_name]['symbol']
+                    # Default unit is 'ounce' - will be set when creating account
+                    db.add_commodity(selected_name, symbol, color_value, "ounce")
+                    st.session_state.commodity_added = True
+                    st.session_state.added_commodity_name = selected_name
+                    st.rerun()
+        else:
+            st.info("All available commodities have been added!")
+    else:
+        st.warning("Maximum of 2 commodities reached. Remove a commodity to add a new one.")
+
+    st.divider()
+
+    st.info("""
+**About Commodities**
+
+- Track precious and industrial metals
+- Commodities can be used for investment tracking
+- Colors help distinguish different commodities in charts
+- Commodities cannot be removed if they're used by accounts
+    """)
+
+
 # Page: Owners
 def page_owners():
     st.title("Manage Owners")
@@ -2068,22 +2881,36 @@ def render_tool_button(icon, label, state_key, widget_renderer):
 
 def render_exchange_rate_widget_inline():
     """Exchange Rate widget content"""
+    
+    # Check if multiple currencies exist
+    if not has_multiple_currencies():
+        st.info("💡 Exchange rates are not available with the current configuration.")
+        st.write("To enable exchange rate functionality, you need:")
+        st.write("- At least 1 currency AND 1 commodity, OR")
+        st.write("- At least 2 currencies (without commodities), OR")
+        st.write("- More than 2 currencies AND more than 2 commodities")
+        st.write("\nConfigure currencies and commodities in the settings to enable this feature.")
+        return
 
-    # Date selector
+    # Date selector (disabled - live rates are always shown for today)
     current_date = date.today()
-    selected_date = st.date_input(
-        "Select Date",
-        value=current_date,
-        max_value=current_date,
-        key="exchange_rate_date"
-    )
+    selected_date = current_date
+    with st.expander("📅 Select Date", expanded=False):
+        st.date_input(
+            "Select Date",
+            value=current_date,
+            max_value=current_date,
+            key="exchange_rate_date",
+            label_visibility="collapsed",
+            disabled=True
+        )
 
     st.write("")  # Add spacing
 
     # Fetch exchange rates
     with st.spinner("Fetching rates..."):
         enabled_currencies = db.get_currency_codes()
-        exchange_rates = CurrencyConverter.get_all_cross_rates(enabled_currencies, selected_date.isoformat())
+        exchange_rates = CurrencyConverter.get_all_cross_rates(enabled_currencies)
 
     if not exchange_rates:
         st.error("Unable to fetch rates.")
@@ -2097,6 +2924,9 @@ def render_exchange_rate_widget_inline():
     # Get enabled currencies
     enabled_currencies = db.get_currency_codes()
 
+    # Currency Exchange Rates Section
+    st.subheader("💱 Currency Exchange Rates")
+    
     # Generate all currency pairs (sorted alphabetically)
     rates_display = []
     for from_curr in enabled_currencies:
@@ -2119,9 +2949,95 @@ def render_exchange_rate_widget_inline():
                 st.text(f"{rate:.4f}")
             else:
                 st.text("N/A")
+    
+    # Commodity Prices Section
+    commodities = db.get_commodities()
+    if commodities:
+        st.divider()
+        st.subheader("🥇 Commodity Prices")
+        
+        # Unit selector dropdown
+        unit_options = ["ounce", "gram", "kilogram", "pound", "ton"]
+        
+        # Initialize session state for selected unit if not exists
+        if "commodity_display_unit" not in st.session_state:
+            st.session_state.commodity_display_unit = "ounce"
+        
+        # Unit selector with callback
+        col_unit1, col_unit2 = st.columns([1, 2])
+        with col_unit1:
+            selected_unit = st.selectbox(
+                "Display Unit",
+                options=unit_options,
+                index=unit_options.index(st.session_state.commodity_display_unit),
+                key="unit_selector",
+                help="Select the unit for displaying commodity prices"
+            )
+        
+        # Update session state if unit changed
+        if selected_unit != st.session_state.commodity_display_unit:
+            st.session_state.commodity_display_unit = selected_unit
+            st.rerun()
+        
+        st.write("")  # Add spacing
+        
+        # Fetch commodity prices
+        with st.spinner("Fetching commodity prices..."):
+            commodity_names = [c['name'] for c in commodities]
+            commodity_prices = CurrencyConverter.get_commodity_prices(commodity_names, enabled_currencies)
+        
+        if commodity_prices:
+            # Display commodity prices in compact format like currency pairs
+            commodity_display = []
+            for commodity in commodities:
+                commodity_name = commodity['name']
+                commodity_unit = commodity.get('unit', 'ounce')
+                if commodity_name in commodity_prices:
+                    prices = commodity_prices[commodity_name]
+                    for currency_code in enabled_currencies:
+                        if currency_code in prices:
+                            # Get base price (per ounce from API)
+                            base_price = prices[currency_code]
+                            
+                            # Convert price to selected unit
+                            converted_price = CurrencyConverter.convert_commodity_unit(
+                                base_price,
+                                "ounce",  # API returns prices per ounce
+                                selected_unit
+                            )
+                            
+                            # Get currency details for emoji
+                            curr_details = db.get_currency_by_code(currency_code)
+                            emoji = curr_details['flag_emoji'] if curr_details else ""
+                            commodity_display.append((
+                                f"{commodity['symbol']} {commodity_name} ({selected_unit}) → {emoji} {currency_code}",
+                                converted_price
+                            ))
+            
+            # Sort alphabetically
+            commodity_display.sort(key=lambda x: x[0])
+            
+            # Display in same format as currency rates
+            for label, price in commodity_display:
+                col1, col2 = st.columns([1.5, 1])
+                with col1:
+                    st.markdown(f"**{label}**")
+                with col2:
+                    st.text(f"{price:,.2f}")
+        else:
+            st.info("💡 Commodity prices are currently unavailable. Please try again later.")
 
 
 # ===== CALENDAR INVITE WIDGET =====
+
+def page_reminder():
+    """Reminder page for monthly balance update reminders"""
+    st.title("📅 Reminder")
+    st.markdown("Set up calendar invites to remind you to update monthly balances")
+    
+    render_calendar_widget()
+
+
 
 def render_calendar_widget():
     """Calendar Invite widget for monthly balance update reminders"""
@@ -2130,14 +3046,24 @@ def render_calendar_widget():
     st.write("**Create Monthly Reminder**")
     st.caption("Set up a calendar invite to remind you to update monthly balances")
 
+    # Initialize previous date in session state if not exists
+    if "prev_calendar_start_date" not in st.session_state:
+        st.session_state.prev_calendar_start_date = datetime.now().date() + timedelta(days=30)
+
     # Date selector for first reminder
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input(
-            "First Reminder Date",
-            value=datetime.now().date() + timedelta(days=30),
-            key="calendar_start_date"
-        )
+        with st.expander("📅 Select First Reminder Date", expanded=False):
+            start_date = st.date_input(
+                "First Reminder Date",
+                value=st.session_state.prev_calendar_start_date,
+                key="calendar_start_date",
+                label_visibility="collapsed"
+            )
+        
+        # Update previous date when changed
+        if start_date != st.session_state.prev_calendar_start_date:
+            st.session_state.prev_calendar_start_date = start_date
 
     with col2:
         reminder_time = st.time_input(
@@ -2192,134 +3118,46 @@ END:VCALENDAR"""
 
 # ===== EXPORT DASHBOARD WIDGET =====
 
-def render_export_widget():
-    """Export Dashboard widget for exporting as PDF/PNG"""
-
-    st.write("**Export Dashboard**")
-    st.caption("Export the dashboard view in various formats")
-
-    # Format selector
-    export_format = st.selectbox(
-        "Select Format",
-        options=["PNG (Image)", "PDF (Document)", "HTML (Interactive)"],
-        key="export_format"
-    )
-
-    st.write("")
-
-    # Export instructions
-    if export_format == "PNG (Image)":
-        st.info("""
-**PNG Export Instructions:**
-1. Navigate to the Dashboard tab
-2. Use your browser's screenshot tool or:
-   - **Windows**: Win + Shift + S
-   - **Mac**: Cmd + Shift + 4
-   - **Linux**: Use Screenshot tool
-3. Select the dashboard area to capture
-        """)
-
-    elif export_format == "PDF (Document)":
-        st.info("""
-**PDF Export Instructions:**
-1. Navigate to the Dashboard tab
-2. Use browser's Print function:
-   - **Chrome/Edge**: Ctrl/Cmd + P
-   - Select "Save as PDF" as destination
-   - Choose "Save"
-        """)
-
-    elif export_format == "HTML (Interactive)":
-        st.info("""
-**HTML Export Instructions:**
-1. Navigate to the Dashboard tab
-2. Use browser's Save Page function:
-   - **Chrome/Edge**: Ctrl/Cmd + S
-   - Select "Webpage, Complete"
-   - Choose save location
-        """)
-
-    st.divider()
-    st.caption("Tip: retract the side bar using the top arrow before exporting")
+# Main app
+def render_navbar():
+    """Render horizontal navbar with tool buttons for dashboard pages"""
+    colors = get_theme_colors()
+    
+    # Initialize modal states in session state
+    if "show_exchange_rate_modal" not in st.session_state:
+        st.session_state.show_exchange_rate_modal = False
+    
+    # Create navbar with buttons
+    st.markdown(f"""
+        <style>
+        .navbar-container {{
+            background-color: {colors['bg_secondary']};
+            padding: 10px 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            border: 1px solid {colors['border']};
+        }}
+        </style>
+    """, unsafe_allow_html=True)
+    
+    # Create columns for navbar buttons
+    cols = st.columns([1])
+    
+    # cols[0] is the spacer column (empty)
 
 
-# ===== CALCULATOR WIDGET =====
-
-def render_calculator_widget():
-    """Calculator widget content"""
-
-    # Initialize calculator history in session state
-    if "calc_history" not in st.session_state:
-        st.session_state.calc_history = []
-    if "calc_trigger" not in st.session_state:
-        st.session_state.calc_trigger = False
-
-    # Callback to trigger calculation on Enter
-    def on_enter():
-        st.session_state.calc_trigger = True
-
-    # Calculator input
-    expression = st.text_input(
-        "Enter calculation",
-        placeholder="e.g., 1500 * 1.35 + 200",
-        key="calc_input",
-        help="Use +, -, *, /, (), and numbers. Press Enter to calculate.",
-        on_change=on_enter
-    )
-
-    # Calculate and Clear buttons
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        calculate = st.button("Calculate", width="stretch", type="primary", key="calc_button")
-    with col2:
-        clear_history = st.button("Clear History", width="stretch", key="clear_calc_history")
-
-    # Check if calculation should be triggered (by Enter or button click)
-    should_calculate = calculate or st.session_state.calc_trigger
-    if st.session_state.calc_trigger:
-        st.session_state.calc_trigger = False  # Reset trigger
-
-    # Clear history
-    if clear_history:
-        st.session_state.calc_history = []
+@st.dialog("💹 Exchange Rate")
+def show_exchange_rate_modal():
+    """Display exchange rate in a modal dialog"""
+    render_exchange_rate_widget_inline()
+    if st.button("Close", key="close_exchange", type="primary", use_container_width=True):
+        st.session_state.show_exchange_rate_modal = False
         st.rerun()
 
-    # Perform calculation
-    if should_calculate and expression:
-        try:
-            # Safe evaluation of mathematical expressions
-            result = eval(expression, {"__builtins__": {}}, {})
 
-            # Add to history
-            st.session_state.calc_history.insert(0, {
-                "expression": expression,
-                "result": result
-            })
-
-            # Keep only last 5 calculations
-            st.session_state.calc_history = st.session_state.calc_history[:5]
-
-            # Display result
-            st.success(f"**Result:** {result:,.2f}")
-
-        except Exception as e:
-            st.error(f"Invalid expression: {str(e)}")
-
-    # Display calculation history
-    if st.session_state.calc_history:
-        st.divider()
-        st.caption("Recent Calculations")
-
-        for calc in st.session_state.calc_history:
-            with st.container():
-                col1, col2 = st.columns([1.5, 1])
-                with col1:
-                    st.text(calc["expression"])
-                with col2:
-                    st.text(f"= {calc['result']:,.2f}")
-
-
-# Main app
 def main():
     # Inject custom CSS for button styling
     inject_custom_css()
@@ -2342,15 +3180,24 @@ def main():
     settings_page = render_sidebar()
 
     # Check if a settings page is selected
-    if settings_page in ["Owners", "Accounts", "Currencies"]:
+    if settings_page in ["Owners", "Accounts", "Commodities", "Currencies", "Exchange Rates", "Reminder"]:
         # Show settings page
         if settings_page == "Owners":
             page_owners()
+        elif settings_page == "Exchange Rates":
+            page_exchange_rates()
         elif settings_page == "Accounts":
             page_accounts()
+        elif settings_page == "Commodities":
+            page_commodities()
         elif settings_page == "Currencies":
             page_currencies()
+        elif settings_page == "Reminder":
+            page_reminder()
     else:
+        # Render full navbar with all buttons for dashboard pages
+        render_navbar()
+        
         # Custom CSS to make tabs larger
         st.markdown("""
             <style>

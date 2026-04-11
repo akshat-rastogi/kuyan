@@ -53,7 +53,7 @@ Experience KUYAN without installation:
 - **Monthly snapshots** - Record balances once per month with historical accuracy
 - **Interactive visualizations** - Line graphs, bar charts, and trend analysis
 - **Year-over-year comparison** - Compare financial performance across years
-- **Built-in tools** - Calculator, calendar invite generator, exchange rate widget, dashboard export (PDF, PNG, HTML)
+- **Built-in tools** - Calendar invite generator, exchange rate widget, dashboard export (PDF, PNG, HTML)
 - **Real-time currency conversion** - Powered by frankfurter.app API
 - **Privacy-first** - All financial data stored locally in SQLite (only exchange rates fetched from API)
 - **Sandbox mode** - Pre-loaded demo environment with 24 months of sample data

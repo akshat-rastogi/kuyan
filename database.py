@@ -89,6 +89,25 @@ class Database:
                 )
             """)
 
+            # Commodities table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS commodities (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    symbol TEXT NOT NULL,
+                    color TEXT NOT NULL,
+                    unit TEXT NOT NULL DEFAULT 'ounce',
+                    display_order INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Add unit column if it doesn't exist (for existing databases)
+            cursor.execute("PRAGMA table_info(commodities)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'unit' not in columns:
+                cursor.execute("ALTER TABLE commodities ADD COLUMN unit TEXT NOT NULL DEFAULT 'ounce'")
+
             # Seed default owners if table is empty
             cursor.execute("SELECT COUNT(*) FROM owners")
             if cursor.fetchone()[0] == 0:
@@ -112,6 +131,18 @@ class Database:
                 cursor.executemany(
                     "INSERT INTO currencies (code, flag_emoji, color, display_order) VALUES (?, ?, ?, ?)",
                     default_currencies
+                )
+
+            # Seed default commodities if table is empty - Only Gold and Silver
+            cursor.execute("SELECT COUNT(*) FROM commodities")
+            if cursor.fetchone()[0] == 0:
+                default_commodities = [
+                    ("Gold", "🥇", "#FFD700", "ounce", 1),    # Gold color
+                    ("Silver", "🥈", "#C0C0C0", "ounce", 2),  # Silver color
+                ]
+                cursor.executemany(
+                    "INSERT INTO commodities (name, symbol, color, unit, display_order) VALUES (?, ?, ?, ?, ?)",
+                    default_commodities
                 )
 
     # Owner Operations
@@ -204,37 +235,68 @@ class Database:
             return count > 0
 
     # Account Operations
-    def add_account(self, name: str, owner: str, account_type: str, currency: str) -> int:
-        """Add a new account"""
+    def add_account(self, name: str, owner: str, account_type: str, currency: str, commodity: Optional[str] = None) -> int:
+        """Add a new account (currency for Bank/Investment/Other, commodity for Commodity type)"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            
+            # Check if commodity column exists, if not add it
+            cursor.execute("PRAGMA table_info(accounts)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'commodity' not in columns:
+                cursor.execute("ALTER TABLE accounts ADD COLUMN commodity TEXT")
+            
             cursor.execute("""
-                INSERT INTO accounts (name, owner, account_type, currency)
-                VALUES (?, ?, ?, ?)
-            """, (name, owner, account_type, currency))
+                INSERT INTO accounts (name, owner, account_type, currency, commodity)
+                VALUES (?, ?, ?, ?, ?)
+            """, (name, owner, account_type, currency, commodity))
             return cursor.lastrowid
 
     def get_accounts(self) -> List[Dict]:
         """Get all accounts"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, name, owner, account_type, currency, created_at
-                FROM accounts
-                ORDER BY owner, name
-            """)
+            
+            # Check if commodity column exists
+            cursor.execute("PRAGMA table_info(accounts)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            if 'commodity' in columns:
+                cursor.execute("""
+                    SELECT id, name, owner, account_type, currency, commodity, created_at
+                    FROM accounts
+                    ORDER BY owner, name
+                """)
+            else:
+                cursor.execute("""
+                    SELECT id, name, owner, account_type, currency, created_at
+                    FROM accounts
+                    ORDER BY owner, name
+                """)
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
 
-    def update_account(self, account_id: int, name: str, owner: str, account_type: str, currency: str):
+    def update_account(self, account_id: int, name: str, owner: str, account_type: str, currency: str, commodity: Optional[str] = None):
         """Update an existing account"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE accounts
-                SET name = ?, owner = ?, account_type = ?, currency = ?
-                WHERE id = ?
-            """, (name, owner, account_type, currency, account_id))
+            
+            # Check if commodity column exists
+            cursor.execute("PRAGMA table_info(accounts)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            if 'commodity' in columns:
+                cursor.execute("""
+                    UPDATE accounts
+                    SET name = ?, owner = ?, account_type = ?, currency = ?, commodity = ?
+                    WHERE id = ?
+                """, (name, owner, account_type, currency, commodity, account_id))
+            else:
+                cursor.execute("""
+                    UPDATE accounts
+                    SET name = ?, owner = ?, account_type = ?, currency = ?
+                    WHERE id = ?
+                """, (name, owner, account_type, currency, account_id))
 
     def delete_account(self, account_id: int):
         """Delete an account and all its snapshots"""
@@ -258,14 +320,29 @@ class Database:
         """Get all snapshots for a specific date"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT s.id, s.snapshot_date, s.account_id, s.balance, s.exchange_rates,
-                       a.name, a.owner, a.account_type, a.currency
-                FROM snapshots s
-                JOIN accounts a ON s.account_id = a.id
-                WHERE s.snapshot_date = ?
-                ORDER BY a.owner, a.name
-            """, (snapshot_date.isoformat(),))
+            
+            # Check if commodity column exists
+            cursor.execute("PRAGMA table_info(accounts)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            if 'commodity' in columns:
+                cursor.execute("""
+                    SELECT s.id, s.snapshot_date, s.account_id, s.balance, s.exchange_rates,
+                           a.name, a.owner, a.account_type, a.currency, a.commodity
+                    FROM snapshots s
+                    JOIN accounts a ON s.account_id = a.id
+                    WHERE s.snapshot_date = ?
+                    ORDER BY a.owner, a.name
+                """, (snapshot_date.isoformat(),))
+            else:
+                cursor.execute("""
+                    SELECT s.id, s.snapshot_date, s.account_id, s.balance, s.exchange_rates,
+                           a.name, a.owner, a.account_type, a.currency
+                    FROM snapshots s
+                    JOIN accounts a ON s.account_id = a.id
+                    WHERE s.snapshot_date = ?
+                    ORDER BY a.owner, a.name
+                """, (snapshot_date.isoformat(),))
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
 
@@ -273,16 +350,33 @@ class Database:
         """Get the most recent snapshots for all accounts"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT s.id, s.snapshot_date, s.account_id, s.balance, s.exchange_rates,
-                       a.name, a.owner, a.account_type, a.currency
-                FROM snapshots s
-                JOIN accounts a ON s.account_id = a.id
-                WHERE s.snapshot_date = (
-                    SELECT MAX(snapshot_date) FROM snapshots
-                )
-                ORDER BY a.owner, a.name
-            """)
+            
+            # Check if commodity column exists
+            cursor.execute("PRAGMA table_info(accounts)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            if 'commodity' in columns:
+                cursor.execute("""
+                    SELECT s.id, s.snapshot_date, s.account_id, s.balance, s.exchange_rates,
+                           a.name, a.owner, a.account_type, a.currency, a.commodity
+                    FROM snapshots s
+                    JOIN accounts a ON s.account_id = a.id
+                    WHERE s.snapshot_date = (
+                        SELECT MAX(snapshot_date) FROM snapshots
+                    )
+                    ORDER BY a.owner, a.name
+                """)
+            else:
+                cursor.execute("""
+                    SELECT s.id, s.snapshot_date, s.account_id, s.balance, s.exchange_rates,
+                           a.name, a.owner, a.account_type, a.currency
+                    FROM snapshots s
+                    JOIN accounts a ON s.account_id = a.id
+                    WHERE s.snapshot_date = (
+                        SELECT MAX(snapshot_date) FROM snapshots
+                    )
+                    ORDER BY a.owner, a.name
+                """)
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
 
@@ -497,3 +591,108 @@ class Database:
                 "INSERT INTO owners (name, owner_type) VALUES (?, ?)",
                 default_owners
             )
+
+    # Commodity Operations
+    def get_commodities(self) -> List[Dict]:
+        """Get all commodities ordered by display_order"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, name, symbol, color, unit, display_order
+                FROM commodities
+                ORDER BY display_order
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_commodity_names(self) -> List[str]:
+        """Get list of commodity names"""
+        commodities = self.get_commodities()
+        return [c['name'] for c in commodities]
+
+    def get_commodity_by_name(self, name: str) -> Optional[Dict]:
+        """Get commodity by name"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, name, symbol, color, unit, display_order
+                FROM commodities
+                WHERE name = ?
+            """, (name,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def add_commodity(self, name: str, symbol: str, color: str, unit: str = "ounce") -> int:
+        """Add a new commodity"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            # Get max display_order
+            cursor.execute("SELECT MAX(display_order) FROM commodities")
+            max_order = cursor.fetchone()[0] or 0
+
+            cursor.execute("""
+                INSERT INTO commodities (name, symbol, color, unit, display_order)
+                VALUES (?, ?, ?, ?, ?)
+            """, (name, symbol, color, unit, max_order + 1))
+            return cursor.lastrowid
+
+    def delete_commodity(self, commodity_id: int) -> bool:
+        """Delete a commodity if not used by any account"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Get commodity name
+            cursor.execute("SELECT name FROM commodities WHERE id = ?", (commodity_id,))
+            row = cursor.fetchone()
+            if not row:
+                return False
+
+            commodity_name = row[0]
+
+            # Check if commodity is used by any account (assuming accounts can have commodities)
+            # For now, we'll allow deletion since commodities aren't linked to accounts yet
+            cursor.execute("DELETE FROM commodities WHERE id = ?", (commodity_id,))
+            return True
+
+    def commodity_in_use(self, name: str) -> bool:
+        """Check if commodity is used by any account"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Check if commodity column exists
+            cursor.execute("PRAGMA table_info(accounts)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            if 'commodity' not in columns:
+                return False
+            
+            cursor.execute("SELECT COUNT(*) FROM accounts WHERE commodity = ?", (name,))
+            return cursor.fetchone()[0] > 0
+
+    def get_commodity_count(self) -> int:
+        """Get total number of commodities"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM commodities")
+            return cursor.fetchone()[0]
+
+    def update_commodity_color(self, commodity_id: int, new_color: str) -> bool:
+        """Update the color of a commodity"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE commodities
+                SET color = ?
+                WHERE id = ?
+            """, (new_color, commodity_id))
+            return cursor.rowcount > 0
+    
+    def update_commodity_unit(self, commodity_id: int, new_unit: str) -> bool:
+        """Update the unit of a commodity"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE commodities
+                SET unit = ?
+                WHERE id = ?
+            """, (new_unit, commodity_id))
+            return cursor.rowcount > 0
