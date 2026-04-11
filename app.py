@@ -8,6 +8,8 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import datetime, date
+from io import StringIO
+from dateutil.relativedelta import relativedelta
 from database import Database
 from currency import CurrencyConverter
 from version import __version__
@@ -86,139 +88,6 @@ def show_success_toast(item_type):
         icon = icons.get(item_type, '✅')
         st.toast(f"{item_type.capitalize()} '{item_name}' added successfully!", icon=icon)
         st.session_state[state_key] = False
-
-
-def render_snapshot_log(snapshots, base_currency, rates):
-    """
-    Render a formatted log of snapshots grouped by owner
-
-    Args:
-        snapshots: List of snapshot dictionaries
-        base_currency: Currency code for conversion
-        rates: Exchange rate dictionary
-    """
-    owners = db.get_owners()
-    owner_names = [owner['name'] for owner in owners]
-    currency_symbol = get_currency_symbol(base_currency)
-
-    log_entries = []
-    for owner_name in owner_names:
-        owner_snapshots = [s for s in snapshots if s['owner'] == owner_name]
-
-        if owner_snapshots:
-            log_entries.append(f"  **{owner_name}:**")
-
-            for snapshot in owner_snapshots:
-                converted_value = get_converted_value(
-                    snapshot["balance"],
-                    snapshot["currency"],
-                    base_currency,
-                    rates
-                )
-
-                # Check if this is a commodity account
-                is_commodity = snapshot["account_type"] == "Commodity"
-                
-                if is_commodity:
-                    # For commodities, extract unit from account name
-                    account_name = snapshot["name"]
-                    unit = "units"
-                    if "(" in account_name and ")" in account_name:
-                        unit = account_name[account_name.rfind("(")+1:account_name.rfind(")")]
-                    
-                    # Show balance with unit instead of currency symbol
-                    commodity_name = snapshot.get("commodity", snapshot["currency"])
-                    entry = (
-                        f"    • {snapshot['name']} ({snapshot['account_type']}): "
-                        f"`{snapshot['balance']:,.2f} {unit}` {commodity_name}"
-                    )
-                else:
-                    # For regular accounts, show currency symbol
-                    acc_symbol = get_currency_symbol(snapshot['currency'])
-                    entry = (
-                        f"    • {snapshot['name']} ({snapshot['account_type']}): "
-                        f"`{acc_symbol}{snapshot['balance']:,.2f}` {snapshot['currency']}"
-                    )
-                
-                if snapshot['currency'] != base_currency:
-                    entry += f" = `{currency_symbol}{converted_value:,.2f}` {base_currency}"
-
-                log_entries.append(entry)
-
-    st.markdown("\n".join(log_entries))
-
-
-def render_snapshot_table_with_delete(snapshots, base_currency, rates, snapshot_date):
-    """
-    Render snapshots in a tabular format with delete option
-    
-    Args:
-        snapshots: List of snapshot dictionaries
-        base_currency: Currency code for conversion
-        rates: Exchange rate dictionary
-        snapshot_date: Date object for the snapshot
-    """
-    if not snapshots:
-        return
-    
-    # Prepare table data
-    table_data = []
-    for snapshot in snapshots:
-        converted_value = get_converted_value(
-            snapshot["balance"],
-            snapshot["currency"],
-            base_currency,
-            rates
-        )
-        
-        # Check if this is a commodity account
-        is_commodity = snapshot["account_type"] == "Commodity"
-        
-        if is_commodity:
-            # For commodities, extract unit from account name
-            account_name = snapshot["name"]
-            unit = "units"
-            if "(" in account_name and ")" in account_name:
-                unit = account_name[account_name.rfind("(")+1:account_name.rfind(")")]
-            
-            # Show balance with unit instead of currency symbol
-            commodity_name = snapshot.get("commodity", snapshot["currency"])
-            row = {
-                'Owner': snapshot['owner'],
-                'Account': snapshot['name'],
-                'Type': snapshot['account_type'],
-                'Balance': f"{snapshot['balance']:,.2f} {unit}",
-                'Currency': commodity_name
-            }
-        else:
-            # For regular accounts, show currency symbol
-            acc_symbol = get_currency_symbol(snapshot['currency'])
-            base_symbol = get_currency_symbol(base_currency)
-            
-            row = {
-                'Owner': snapshot['owner'],
-                'Account': snapshot['name'],
-                'Type': snapshot['account_type'],
-                'Balance': f"{acc_symbol}{snapshot['balance']:,.2f}",
-                'Currency': snapshot['currency']
-            }
-        
-        # Add converted value if different currency
-        if snapshot['currency'] != base_currency:
-            base_symbol = get_currency_symbol(base_currency)
-            row[f'Value ({base_currency})'] = f"{base_symbol}{converted_value:,.2f}"
-        
-        table_data.append(row)
-    
-    # Display table
-    render_data_table(table_data)
-    
-    # Add delete button
-    st.write("")  # Spacing
-    if st.button("🗑️ Delete This Snapshot", type="secondary", use_container_width=True):
-        st.session_state.show_delete_dialog = True
-        st.session_state.delete_snapshot_date = snapshot_date
-        st.rerun()
 
 
 def apply_chart_theme(fig, colors, xaxis_title=None, yaxis_title=None, show_legend=False, legend_title=""):
@@ -319,6 +188,17 @@ def inject_custom_css():
         /* Ensure sidebar overlays on top of sandbox banner */
         section[data-testid="stSidebar"] {
             z-index: 1000001 !important;
+        }
+
+        /* Left-align sidebar buttons */
+        section[data-testid="stSidebar"] button[kind="secondary"],
+        section[data-testid="stSidebar"] button[kind="primary"] {
+            text-align: left !important;
+            justify-content: flex-start !important;
+        }
+        section[data-testid="stSidebar"] button[kind="secondary"] p,
+        section[data-testid="stSidebar"] button[kind="primary"] p {
+            text-align: left !important;
         }
 
         /* Hide all image hover elements in sidebar */
@@ -523,47 +403,35 @@ def render_sidebar():
         # Centered title and captions
         st.markdown("<h1 style='text-align: center;'>KUYAN</h1>", unsafe_allow_html=True)
         st.markdown("<p style='text-align: center; font-size: 0.875rem; color: gray;'>Monthly Net Worth Tracker</p>", unsafe_allow_html=True)
-        st.markdown(f"<p style='text-align: center; font-size: 0.875rem; color: gray;'>v{__version__}</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='text-align: center; font-size: 0.875rem; color: gray;'>v{__version__}</p><br/><br/>", unsafe_allow_html=True)
 
-        st.divider()
 
         # Initialize navigation in session state
         if "settings_nav" not in st.session_state:
             st.session_state.settings_nav = None
 
-        # Navigation buttons
+        # Navigation buttons - Dashboard, Reminder, and Exchange Rates grouped together
         if st.button("📊 Dashboard", width="stretch"):
             st.session_state.settings_nav = None
             st.rerun()
 
-        st.divider()
-
-        # Settings section (ascending order)
-        if st.button("🏦 Accounts", width="stretch"):
-            st.session_state.settings_nav = "Accounts"
-            st.rerun()
-
-        if st.button("🥇 Commodities", width="stretch"):
-            st.session_state.settings_nav = "Commodities"
-            st.rerun()
-
-        if st.button("💱 Currencies", width="stretch"):
-            st.session_state.settings_nav = "Currencies"
-            st.rerun()
-
-        if st.button("👥 Owners", width="stretch"):
-            st.session_state.settings_nav = "Owners"
+        if st.button("🔔 Reminder", width="stretch"):
+            st.session_state.settings_nav = "Reminder"
             st.rerun()
 
         if st.button("💹 Exchange Rates", width="stretch"):
             st.session_state.settings_nav = "Exchange Rates"
             st.rerun()
 
+        if st.button("🏠 Mortgage", width="stretch"):
+            st.session_state.settings_nav = "Mortgage"
+            st.rerun()
+
         st.divider()
 
-        # Tools section
-        if st.button("📅 Reminder", width="stretch"):
-            st.session_state.settings_nav = "Reminder"
+        # Settings section - moved to bottom
+        if st.button("⚙️ Settings", width="stretch"):
+            st.session_state.settings_nav = "Settings"
             st.rerun()
 
         page = st.session_state.settings_nav
@@ -571,7 +439,7 @@ def render_sidebar():
         # Sandbox reset button
         if is_sandbox:
             st.divider()
-            if st.button("🔄 Reset Sandbox", type="secondary", width="stretch"):
+            if st.button("Reset Sandbox", type="secondary", width="stretch"):
                 show_reset_confirmation()
 
         return page
@@ -800,7 +668,7 @@ def calculate_total_net_worth(snapshots, base_currency):
 
 
 # Page: Dashboard
-def page_dashboard():
+def page_dashboard():    
     # Get default base currency (first enabled currency)
     default_currency = get_default_currency()
     base_currency = st.session_state.get("base_currency", default_currency)
@@ -975,36 +843,69 @@ def page_dashboard():
                 f"{base_currency} Value": f"{get_currency_symbol(base_currency)}{converted_value:,.2f}"
             })
 
-        # Display account breakdown table (without total)
-        render_data_table(breakdown_data)
-
-        # Display total row separately using theme colors
+        # Get theme colors
         colors = get_theme_colors()
+        
+        # Use Streamlit's native expander with custom styling for the header
+        # Create a styled header that looks like the total row
         st.markdown(f"""
-        <div style="margin-top: 10px; padding: 15px; background-color: {colors['bg_secondary']}; border-top: 2px solid {colors['border']}; border-radius: 5px;">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <span style="font-weight: bold; font-size: 16px; color: {colors['text_primary']};">TOTAL {base_currency}</span>
-                <span style="font-weight: bold; font-size: 16px; color: {colors['text_primary']};">{get_currency_symbol(base_currency)}{total_converted:,.2f}</span>
-            </div>
-        </div>
+        <style>
+        div[data-testid="stExpander"] {{
+            border: none;
+            box-shadow: none;
+        }}
+        div[data-testid="stExpander"] > div:first-child {{
+            padding: 15px;
+            background-color: {colors['bg_secondary']};
+            border-top: 2px solid {colors['border']};
+            border-radius: 5px;
+        }}
+        div[data-testid="stExpander"] > div:first-child:hover {{
+            opacity: 0.9;
+        }}
+        </style>
         """, unsafe_allow_html=True)
+        
+        # Create expander with styled label showing total
+        with st.expander(f"**TOTAL {base_currency}** — {get_currency_symbol(base_currency)}{total_converted:,.2f}", expanded=False):
+            # Display account breakdown table
+            render_data_table(breakdown_data)
 
     st.divider()
-
-    # Net worth over time with currency selector
-    st.subheader("Net Worth Over Time")
 
     snapshot_dates = db.get_all_snapshot_dates()
 
     if len(snapshot_dates) > 1:
-        # Currency selector
-        col1, col2 = st.columns([1, 3])
-        with col1:
+        # Create two columns for side-by-side graphs
+        graph_col1, graph_col2 = st.columns(2)
+        
+        # Left column: Net Worth Over Time
+        with graph_col1:
+            # Net worth over time with currency selector
+            st.markdown("#### Net Worth Over Time")
+
+            # Currency selector
             selected_currency = render_currency_selector(
                 label="Select Currency",
                 default_index=0,
                 key="networth_currency_selector"
             )
+
+        # Right column: Currency Holdings Growth header and baseline selector
+        with graph_col2:
+            st.markdown("#### Currency Holdings Growth (Normalized)")
+            
+            # Baseline month selector
+            # Convert dates to month labels for display (descending order - newest first)
+            month_labels = [datetime.fromisoformat(d).strftime("%b %Y") for d in snapshot_dates]
+            baseline_month_label = st.selectbox(
+                "Baseline Month (100%)",
+                options=month_labels,
+                index=len(month_labels) - 1,  # Default to oldest month
+                key="baseline_month_selector"
+            )
+            # Get the index of selected baseline (adjusted for reversed loop below)
+            baseline_index = len(month_labels) - 1 - month_labels.index(baseline_month_label)
 
         # Collect data for selected currency
         history_data = []
@@ -1097,30 +998,7 @@ def page_dashboard():
                 font_color=colors['text_primary']
             )
         )
-        st.plotly_chart(fig_line, use_container_width=True)
-        st.markdown(
-            '<p style="text-align: right; font-size: 0.6rem; margin-top: -10px;">* Monthly exchange rates are derived from rates effective on the 1st of each month</p>',
-            unsafe_allow_html=True
-        )
-        st.divider()
-
-        # Currency split - amounts held in each currency (normalized)
-        st.subheader("Currency Holdings Growth (Normalized)")
-
-        # Baseline month selector
-        col_baseline, col_spacer = st.columns([2, 3])
-        with col_baseline:
-            # Convert dates to month labels for display (descending order - newest first)
-            month_labels = [datetime.fromisoformat(d).strftime("%b %Y") for d in snapshot_dates]
-            baseline_month_label = st.selectbox(
-                "Baseline Month (100%)",
-                options=month_labels,
-                index=len(month_labels) - 1,  # Default to oldest month
-                key="baseline_month_selector"
-            )
-            # Get the index of selected baseline (adjusted for reversed loop below)
-            baseline_index = len(month_labels) - 1 - month_labels.index(baseline_month_label)
-
+        
         # Collect data for amounts held in each currency
         currency_split_data = []
         baseline_holdings = {}
@@ -1233,7 +1111,188 @@ def page_dashboard():
                 font=dict(color=colors['text_primary'])
             )
         )
-        st.plotly_chart(fig_split, use_container_width=True)
+        
+        # Render both charts in their respective columns
+        with graph_col1:
+            st.plotly_chart(fig_line, use_container_width=True)
+            st.markdown(
+                '<p style="text-align: right; font-size: 0.6rem; margin-top: -10px;">* Monthly exchange rates are derived from rates effective on the 1st of each month</p>',
+                unsafe_allow_html=True
+            )
+        
+        with graph_col2:
+            st.plotly_chart(fig_split, use_container_width=True)
+        
+        st.divider()
+                
+        # Create two columns for pie charts
+        pie_col1, pie_col2 = st.columns(2)
+        
+        # Get latest snapshots for pie charts
+        latest_snapshots = db.get_latest_snapshots()
+        
+        if latest_snapshots:
+            # Prepare data for pie charts
+            rates = json.loads(latest_snapshots[0]["exchange_rates"]) if latest_snapshots[0].get("exchange_rates") else {}
+            snapshot_date_str = latest_snapshots[0]["snapshot_date"]
+            
+            # Fetch commodity prices
+            commodity_accounts = [s for s in latest_snapshots if s["account_type"] == "Commodity"]
+            commodity_prices = {}
+            commodity_configs = {}
+            
+            if commodity_accounts:
+                commodity_list = [s.get("commodity") for s in commodity_accounts if s.get("commodity")]
+                unique_commodities = list(set([c for c in commodity_list if c is not None]))
+                enabled_currencies = db.get_currency_codes()
+                
+                commodity_prices = CurrencyConverter.get_commodity_prices(
+                    unique_commodities,
+                    enabled_currencies,
+                    date=snapshot_date_str
+                ) or {}
+                
+                commodity_configs = {c['name']: c for c in db.get_commodities()}
+            
+            # Calculate values by owner and type
+            value_by_owner = {}
+            value_by_type = {}
+            
+            for snapshot in latest_snapshots:
+                is_commodity = snapshot["account_type"] == "Commodity"
+                
+                if is_commodity:
+                    commodity_name = snapshot.get("commodity")
+                    quantity = snapshot["balance"]
+                    
+                    if commodity_name and commodity_name in commodity_prices:
+                        price_per_ounce = commodity_prices[commodity_name].get(base_currency, 0)
+                        commodity_unit = "ounce"
+                        if commodity_name in commodity_configs:
+                            commodity_unit = commodity_configs[commodity_name].get('unit', 'ounce')
+                        
+                        price_per_unit = CurrencyConverter.convert_commodity_unit(
+                            price_per_ounce,
+                            "ounce",
+                            commodity_unit
+                        )
+                        converted_value = quantity * price_per_unit
+                    else:
+                        converted_value = 0.0
+                else:
+                    converted_value = get_converted_value(
+                        snapshot["balance"],
+                        snapshot["currency"],
+                        base_currency,
+                        rates
+                    )
+                
+                # Aggregate by owner
+                owner = snapshot["owner"]
+                if owner not in value_by_owner:
+                    value_by_owner[owner] = 0.0
+                value_by_owner[owner] += converted_value
+                
+                # Aggregate by type
+                acc_type = snapshot["account_type"]
+                if acc_type not in value_by_type:
+                    value_by_type[acc_type] = 0.0
+                value_by_type[acc_type] += converted_value
+            
+            # Get theme colors
+            colors = get_theme_colors()
+            
+            # Get currency symbol for pie charts
+            currency_symbol = get_currency_symbol(base_currency)
+            
+            # Pie chart 1: Value by Owner
+            with pie_col1:
+                st.markdown("#### Value by Owner")
+                
+                df_owner = pd.DataFrame([
+                    {"Owner": owner, "Value": value}
+                    for owner, value in value_by_owner.items()
+                ])
+                
+                fig_owner = px.pie(
+                    df_owner,
+                    values="Value",
+                    names="Owner",
+                    title=f"Value by Owner ({base_currency})"
+                )
+                
+                fig_owner.update_traces(
+                    textposition='inside',
+                    textinfo='percent+label',
+                    hovertemplate=f'<b>%{{label}}</b><br>Value: {currency_symbol}%{{value:,.2f}}<br>Percentage: %{{percent}}<extra></extra>'
+                )
+                
+                fig_owner.update_layout(
+                    plot_bgcolor=colors['plot_bg'],
+                    paper_bgcolor=colors['plot_bg'],
+                    font=dict(color=colors['plot_text']),
+                    title_font=dict(color=colors['text_primary']),
+                    hoverlabel=dict(
+                        bgcolor=colors['surface'],
+                        font_size=13,
+                        font_family="Arial, sans-serif",
+                        font_color=colors['text_primary']
+                    ),
+                    showlegend=True,
+                    legend=dict(
+                        bgcolor=colors['surface'],
+                        bordercolor=colors['border'],
+                        borderwidth=1,
+                        font=dict(color=colors['text_primary'])
+                    )
+                )
+                
+                st.plotly_chart(fig_owner, use_container_width=True)
+            
+            # Pie chart 2: Value by Type
+            with pie_col2:
+                st.markdown("#### Value by Type")
+                
+                df_type = pd.DataFrame([
+                    {"Type": acc_type, "Value": value}
+                    for acc_type, value in value_by_type.items()
+                ])
+                
+                fig_type = px.pie(
+                    df_type,
+                    values="Value",
+                    names="Type",
+                    title=f"Value by Type ({base_currency})"
+                )
+                
+                fig_type.update_traces(
+                    textposition='inside',
+                    textinfo='percent+label',
+                    hovertemplate=f'<b>%{{label}}</b><br>Value: {currency_symbol}%{{value:,.2f}}<br>Percentage: %{{percent}}<extra></extra>'
+                )
+                
+                fig_type.update_layout(
+                    plot_bgcolor=colors['plot_bg'],
+                    paper_bgcolor=colors['plot_bg'],
+                    font=dict(color=colors['plot_text']),
+                    title_font=dict(color=colors['text_primary']),
+                    hoverlabel=dict(
+                        bgcolor=colors['surface'],
+                        font_size=13,
+                        font_family="Arial, sans-serif",
+                        font_color=colors['text_primary']
+                    ),
+                    showlegend=True,
+                    legend=dict(
+                        bgcolor=colors['surface'],
+                        bordercolor=colors['border'],
+                        borderwidth=1,
+                        font=dict(color=colors['text_primary'])
+                    )
+                )
+                
+                st.plotly_chart(fig_type, use_container_width=True)
+        
         st.divider()
 
         # Year-over-year comparison if we have enough data
@@ -1361,22 +1420,35 @@ def page_dashboard():
 
 
 # Page: Accounts
-def page_accounts():
-    st.title("Manage Accounts")
-
+def page_accounts(key_prefix=""):
     # Unit options for commodity accounts
     UNIT_OPTIONS = ["gram", "ounce", "kilo"]
 
     # Show success message if account was just added
     show_success_toast('account')
 
-    # List existing accounts
-    st.subheader("Existing Accounts")
+    # List existing accounts with filter
+    col_title, col_filter = st.columns([3, 1])
+    with col_title:
+        st.subheader("Existing Accounts")
+    with col_filter:
+        # Account type filter dropdown aligned to the right
+        filter_options = ["All Types", "Bank", "Investment", "Commodity", "Other"]
+        selected_filter = st.selectbox(
+            "Filter by Type",
+            filter_options,
+            key=f"{key_prefix}account_type_filter",
+            label_visibility="collapsed"
+        )
 
     accounts = db.get_accounts()
     owner_names = db.get_owner_names()
     currency_codes = db.get_currency_codes()
     commodity_list = db.get_commodities()
+
+    # Apply filter if not "All Types"
+    if selected_filter != "All Types":
+        accounts = [acc for acc in accounts if acc['account_type'] == selected_filter]
 
     if accounts:
         # Group accounts by owner for better organization
@@ -1393,7 +1465,7 @@ def page_accounts():
             for account in accounts_by_owner[owner_name]:
                 # Create expandable section for each account
                 is_commodity = account['account_type'] == "Commodity"
-                account_icon = "🏦" if account['account_type'] == "Bank" else "📈" if account['account_type'] == "Investment" else "🥇" if is_commodity else "💼"
+                account_icon = "🏦" if account['account_type'] == "Bank" else "📈" if account['account_type'] == "Investment" else "🏛️" if account['account_type'] == "Pension" else "🥇" if is_commodity else "💼"
                 display_label = account.get('commodity', account['currency']) if is_commodity else account['currency']
                 with st.expander(f"{account_icon} {account['name']} - {display_label}", expanded=False):
                     st.write(f"**Type:** {account['account_type']}")
@@ -1411,7 +1483,7 @@ def page_accounts():
                             new_name = st.text_input(
                                 "Account Name",
                                 value=account['name'],
-                                key=f"name_{account['id']}",
+                                key=f"{key_prefix}name_{account['id']}",
                                 disabled=True,
                                 help="Commodity account names are auto-generated"
                             )
@@ -1419,24 +1491,24 @@ def page_accounts():
                             new_name = st.text_input(
                                 "Account Name",
                                 value=account['name'],
-                                key=f"name_{account['id']}"
+                                key=f"{key_prefix}name_{account['id']}"
                             )
                         owner_index = owner_names.index(account['owner']) if account['owner'] in owner_names else 0
                         new_owner = st.selectbox(
                             "Owner",
                             owner_names,
                             index=owner_index,
-                            key=f"owner_{account['id']}"
+                            key=f"{key_prefix}owner_{account['id']}"
                         )
 
                     with col2:
-                        type_options = ["Bank", "Investment", "Commodity", "Other"]
+                        type_options = ["Bank", "Investment", "Pension", "Commodity", "Other"]
                         type_index = type_options.index(account['account_type']) if account['account_type'] in type_options else 0
                         new_type = st.selectbox(
                             "Account Type",
                             type_options,
                             index=type_index,
-                            key=f"type_{account['id']}"
+                            key=f"{key_prefix}type_{account['id']}"
                         )
                         
                         # Show currency or commodity dropdown based on account type
@@ -1448,7 +1520,7 @@ def page_accounts():
                                 "Commodity",
                                 commodity_names,
                                 index=comm_index,
-                                key=f"commodity_{account['id']}"
+                                key=f"{key_prefix}commodity_{account['id']}"
                             )
                             
                             # Extract unit from account name (format: "Gold (ounce)")
@@ -1463,7 +1535,7 @@ def page_accounts():
                                 "Unit",
                                 UNIT_OPTIONS,
                                 index=unit_index,
-                                key=f"unit_{account['id']}"
+                                key=f"{key_prefix}unit_{account['id']}"
                             )
                             new_currency = ""  # Empty for commodity accounts
                         else:
@@ -1472,13 +1544,13 @@ def page_accounts():
                                 "Currency",
                                 currency_codes,
                                 index=curr_index,
-                                key=f"currency_{account['id']}"
+                                key=f"{key_prefix}currency_{account['id']}"
                             )
                             new_commodity = None
                             new_unit = None
 
                     # Update button
-                    if st.button(f"💾 Update Account", key=f"update_btn_{account['id']}", width="stretch"):
+                    if st.button(f"💾 Update Account", key=f"{key_prefix}update_btn_{account['id']}", width="stretch"):
                         if new_type == "Commodity":
                             # Auto-generate name for commodity accounts with unit
                             auto_name = f"{new_commodity} ({new_unit})"
@@ -1496,7 +1568,7 @@ def page_accounts():
                     st.divider()
 
                     # Remove account button
-                    if st.button(f"🗑️ Remove {account['name']}", key=f"remove_btn_{account['id']}", width="stretch", type="secondary"):
+                    if st.button(f"🗑️ Remove {account['name']}", key=f"{key_prefix}remove_btn_{account['id']}", width="stretch", type="secondary"):
                         db.delete_account(account['id'])
                         st.success(f"Account '{account['name']}' removed!")
                         st.rerun()
@@ -1524,29 +1596,29 @@ def page_accounts():
         
         with col1:
             # Account type selector first to determine what to show
-            account_type = st.selectbox("Account Type", ["Bank", "Investment", "Commodity", "Other"], key="add_account_type")
-            owner = st.selectbox("Owner", owner_names, key="add_account_owner")
+            account_type = st.selectbox("Account Type", ["Bank", "Investment", "Pension", "Commodity", "Other"], key=f"{key_prefix}add_account_type")
+            owner = st.selectbox("Owner", owner_names, key=f"{key_prefix}add_account_owner")
 
         with col2:
             # Show currency or commodity dropdown based on account type
             if account_type == "Commodity":
                 commodity_names = [c['name'] for c in commodity_list]
                 if commodity_names:
-                    selected_commodity = st.selectbox("Commodity", commodity_names, key="add_account_commodity")
-                    selected_unit = st.selectbox("Unit", UNIT_OPTIONS, index=1, key="add_account_unit")  # Default to "ounce"
+                    selected_commodity = st.selectbox("Commodity", commodity_names, key=f"{key_prefix}add_account_commodity")
+                    selected_unit = st.selectbox("Unit", UNIT_OPTIONS, index=1, key=f"{key_prefix}add_account_unit")  # Default to "ounce"
                     # Auto-generate account name with unit
                     auto_account_name = f"{selected_commodity} ({selected_unit})"
-                    st.text_input("Account Name", value=auto_account_name, key="add_account_name_display", disabled=True, help="Auto-generated for commodity accounts")
+                    st.text_input("Account Name", value=auto_account_name, key=f"{key_prefix}add_account_name_display", disabled=True, help="Auto-generated for commodity accounts")
                 else:
                     st.warning("No commodities available. Please add commodities first!")
                     selected_unit = None
             else:
-                account_name = st.text_input("Account Name", placeholder="e.g., TD Chequing", key="add_account_name")
-                currency = st.selectbox("Currency", currency_codes, key="add_account_currency")
+                account_name = st.text_input("Account Name", placeholder="e.g., TD Chequing", key=f"{key_prefix}add_account_name")
+                currency = st.selectbox("Currency", currency_codes, key=f"{key_prefix}add_account_currency")
                 selected_unit = None
 
         # Add button
-        if st.button("➕ Add Account", width="stretch", type="primary", key="add_account_btn"):
+        if st.button("➕ Add Account", width="stretch", type="primary", key=f"{key_prefix}add_account_btn"):
             if account_type == "Commodity":
                 if selected_commodity and auto_account_name:
                     db.add_account(auto_account_name, owner, account_type, "", selected_commodity)
@@ -2346,9 +2418,7 @@ def page_exchange_rates():
 
 
 # Page: Currencies
-def page_currencies():
-    st.title("Manage Currencies")
-
+def page_currencies(key_prefix=""):
     # Currency metadata (Frankfurter API supported currencies with flags)
     AVAILABLE_CURRENCIES = {
         "AUD": {"name": "Australian Dollar", "flag": "🇦🇺"},
@@ -2449,7 +2519,7 @@ def page_currencies():
                     new_color = st.selectbox(
                         "Select Color",
                         list(COLOR_OPTIONS.keys()),
-                        key=f"color_select_{curr['id']}"
+                        key=f"{key_prefix}color_select_{curr['id']}"
                     )
 
                 with col3:
@@ -2469,7 +2539,7 @@ def page_currencies():
                     """, unsafe_allow_html=True)
 
                 # Update button
-                if st.button(f"🎨 Update Color", key=f"update_btn_{curr['id']}", width="stretch"):
+                if st.button(f"🎨 Update Color", key=f"{key_prefix}update_btn_{curr['id']}", width="stretch"):
                     success = db.update_currency_color(curr['id'], new_color_value)
                     if success:
                         st.success(f"Color updated!")
@@ -2485,7 +2555,7 @@ def page_currencies():
                 elif is_in_use:
                     st.warning(f"Cannot remove {curr['code']} - it's currently used by existing accounts.")
                 else:
-                    if st.button(f"🗑️ Remove {curr['code']}", key=f"remove_btn_{curr['id']}", width="stretch", type="secondary"):
+                    if st.button(f"🗑️ Remove {curr['code']}", key=f"{key_prefix}remove_btn_{curr['id']}", width="stretch", type="secondary"):
                         success = db.delete_currency(curr['id'])
                         if success:
                             st.success(f"Currency {curr['code']} removed!")
@@ -2508,14 +2578,14 @@ def page_currencies():
             with col1:
                 # Currency selector
                 currency_options = [f"{v['flag']} {k} - {v['name']}" for k, v in sorted(available_to_add.items())]
-                selected = st.selectbox("Select Currency", currency_options, key="add_currency_selector")
+                selected = st.selectbox("Select Currency", currency_options, key=f"{key_prefix}add_currency_selector")
 
                 # Extract currency code from selection
                 selected_code = selected.split()[1] if selected else None
 
             with col2:
                 # Color selector
-                color_name = st.selectbox("Select Color", list(COLOR_OPTIONS.keys()), key="add_color_selector")
+                color_name = st.selectbox("Select Color", list(COLOR_OPTIONS.keys()), key=f"{key_prefix}add_color_selector")
                 color_value = COLOR_OPTIONS[color_name]
 
             with col3:
@@ -2534,7 +2604,7 @@ def page_currencies():
                 """, unsafe_allow_html=True)
 
             # Add button with proper spacing
-            if st.button("➕ Add Currency", width="stretch", type="primary", key="add_currency_btn"):
+            if st.button("➕ Add Currency", width="stretch", type="primary", key=f"{key_prefix}add_currency_btn"):
                 if selected_code:
                     flag_emoji = AVAILABLE_CURRENCIES[selected_code]['flag']
                     db.add_currency(selected_code, flag_emoji, color_value)
@@ -2558,9 +2628,7 @@ def page_currencies():
     """)
 
 
-def page_commodities():
-    st.title("Manage Commodities")
-
+def page_commodities(key_prefix=""):
     # Commodity metadata - Only Gold and Silver are supported
     AVAILABLE_COMMODITIES = {
         "Gold": {"symbol": "🥇", "description": "Precious metal - Gold"},
@@ -2628,7 +2696,7 @@ def page_commodities():
                     new_color = st.selectbox(
                         "Select Color",
                         list(COLOR_OPTIONS.keys()),
-                        key=f"color_select_{comm['id']}"
+                        key=f"{key_prefix}color_select_{comm['id']}"
                     )
 
                 with col3:
@@ -2642,7 +2710,7 @@ def page_commodities():
                     )
 
                 # Update button
-                if st.button(f"🎨 Update Color", key=f"update_btn_{comm['id']}", width="stretch"):
+                if st.button(f"🎨 Update Color", key=f"{key_prefix}update_btn_{comm['id']}", width="stretch"):
                     success = db.update_commodity_color(comm['id'], new_color_value)
                     if success:
                         st.success(f"Color updated!")
@@ -2656,7 +2724,7 @@ def page_commodities():
                 if is_in_use:
                     st.warning(f"Cannot remove {comm['name']} - it's currently used by existing accounts.")
                 else:
-                    if st.button(f"🗑️ Remove {comm['name']}", key=f"remove_btn_{comm['id']}", width="stretch", type="secondary"):
+                    if st.button(f"🗑️ Remove {comm['name']}", key=f"{key_prefix}remove_btn_{comm['id']}", width="stretch", type="secondary"):
                         success = db.delete_commodity(comm['id'])
                         if success:
                             st.success(f"Commodity {comm['name']} removed!")
@@ -2679,14 +2747,14 @@ def page_commodities():
             with col1:
                 # Commodity selector
                 commodity_options = [f"{v['symbol']} {k} - {v['description']}" for k, v in sorted(available_to_add.items())]
-                selected = st.selectbox("Select Commodity", commodity_options, key="add_commodity_selector")
+                selected = st.selectbox("Select Commodity", commodity_options, key=f"{key_prefix}add_commodity_selector")
 
                 # Extract commodity name from selection
                 selected_name = selected.split()[1] if selected else None
 
             with col2:
                 # Color selector
-                color_name = st.selectbox("Select Color", list(COLOR_OPTIONS.keys()), key="add_color_selector")
+                color_name = st.selectbox("Select Color", list(COLOR_OPTIONS.keys()), key=f"{key_prefix}add_color_selector")
                 color_value = COLOR_OPTIONS[color_name]
 
             with col3:
@@ -2699,7 +2767,7 @@ def page_commodities():
                 )
 
             # Add button with proper spacing
-            if st.button("➕ Add Commodity", width="stretch", type="primary", key="add_commodity_btn"):
+            if st.button("➕ Add Commodity", width="stretch", type="primary", key=f"{key_prefix}add_commodity_btn"):
                 if selected_name:
                     symbol = AVAILABLE_COMMODITIES[selected_name]['symbol']
                     # Default unit is 'ounce' - will be set when creating account
@@ -2724,10 +2792,52 @@ def page_commodities():
     """)
 
 
-# Page: Owners
-def page_owners():
-    st.title("Manage Owners")
+# Page: Settings (with tabs for Accounts, Commodities, Currencies, Owners)
+def page_settings():
+    st.title("⚙️ Settings")
+    
+    # Custom CSS to make tabs larger (similar to dashboard)
+    st.markdown("""
+        <style>
+        div[data-baseweb="tab-list"] {
+            gap: 8px !important;
+        }
+        div[data-baseweb="tab-list"] button {
+            height: 50px !important;
+            padding: 12px 20px !important;
+        }
+        div[data-baseweb="tab-list"] button[role="tab"] * {
+            font-size: 24px !important;
+            font-weight: 600 !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    # Create tabs for the five settings pages
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        ["🏦 Accounts", "🥇 Commodities", "💱 Currencies", "👥 Owners", "🏠 Mortgage"]
+    )
+    
+    # Only render content in active tab to avoid key conflicts
+    # Streamlit tabs render all content, so we need to ensure unique keys
+    with tab1:
+        page_accounts(key_prefix="accounts_")
+    
+    with tab2:
+        page_commodities(key_prefix="commodities_")
+    
+    with tab3:
+        page_currencies(key_prefix="currencies_")
+    
+    with tab4:
+        page_owners(key_prefix="owners_")
+    
+    with tab5:
+        page_mortgage_settings(key_prefix="mortgage_settings_")
 
+
+# Page: Owners
+def page_owners(key_prefix=""):
     # Show success message if owner was just added
     show_success_toast('owner')
 
@@ -2753,7 +2863,7 @@ def page_owners():
                     new_name = st.text_input(
                         "Owner Name",
                         value=owner['name'],
-                        key=f"name_{owner['id']}"
+                        key=f"{key_prefix}name_{owner['id']}"
                     )
 
                 with col2:
@@ -2763,11 +2873,11 @@ def page_owners():
                         "Owner Type",
                         type_options,
                         index=current_index,
-                        key=f"type_{owner['id']}"
+                        key=f"{key_prefix}type_{owner['id']}"
                     )
 
                 # Update button
-                if st.button(f"💾 Update Owner", key=f"update_btn_{owner['id']}", width="stretch"):
+                if st.button(f"💾 Update Owner", key=f"{key_prefix}update_btn_{owner['id']}", width="stretch"):
                     if new_name:
                         try:
                             db.update_owner(owner['id'], new_name, new_type)
@@ -2789,7 +2899,7 @@ def page_owners():
                 elif has_accounts:
                     st.warning(f"Cannot remove {owner['name']} - this owner has existing accounts.")
                 else:
-                    if st.button(f"🗑️ Remove {owner['name']}", key=f"remove_btn_{owner['id']}", width="stretch", type="secondary"):
+                    if st.button(f"🗑️ Remove {owner['name']}", key=f"{key_prefix}remove_btn_{owner['id']}", width="stretch", type="secondary"):
                         success = db.delete_owner(owner['id'])
                         if success:
                             st.success(f"Owner '{owner['name']}' removed!")
@@ -2807,13 +2917,13 @@ def page_owners():
     col1, col2 = st.columns(2)
 
     with col1:
-        owner_name = st.text_input("Owner Name", placeholder="e.g., John, Acme Corp", key="add_owner_name")
+        owner_name = st.text_input("Owner Name", placeholder="e.g., John, Acme Corp", key=f"{key_prefix}add_owner_name")
 
     with col2:
-        owner_type = st.selectbox("Owner Type", ["Individual", "Company", "Joint/Shared", "Trust", "Other"], key="add_owner_type")
+        owner_type = st.selectbox("Owner Type", ["Individual", "Company", "Joint/Shared", "Trust", "Other"], key=f"{key_prefix}add_owner_type")
 
     # Add button
-    if st.button("➕ Add Owner", width="stretch", type="primary", key="add_owner_btn"):
+    if st.button("➕ Add Owner", width="stretch", type="primary", key=f"{key_prefix}add_owner_btn"):
         if owner_name:
             try:
                 db.add_owner(owner_name, owner_type)
@@ -3032,10 +3142,485 @@ def render_exchange_rate_widget_inline():
 
 def page_reminder():
     """Reminder page for monthly balance update reminders"""
-    st.title("📅 Reminder")
+    st.title("🔔 Reminder")
     st.markdown("Set up calendar invites to remind you to update monthly balances")
     
     render_calendar_widget()
+
+def calculate_scheduled_payment(principal, annual_interest_rate, total_payments, payments_per_year):
+    """
+    Calculate the regular scheduled mortgage payment using the PMT formula.
+
+    Args:
+        principal: Original loan amount
+        annual_interest_rate: Annual nominal rate as a percentage (e.g. 3.55)
+        total_payments: Total scheduled number of payments
+        payments_per_year: Number of payments made per year
+
+    Returns:
+        float: Scheduled periodic payment amount
+    """
+    rate_per_period = (annual_interest_rate / 100) / payments_per_year
+
+    if rate_per_period == 0:
+        return principal / total_payments if total_payments else 0.0
+
+    growth_factor = (1 + rate_per_period) ** total_payments
+    return principal * (rate_per_period * growth_factor) / (growth_factor - 1)
+
+
+def generate_amortization_schedule(
+    loan_amount,
+    annual_interest_rate,
+    loan_term_years,
+    payments_per_year,
+    start_date,
+    recurring_extra_payment,
+    custom_extra_payments
+):
+    """
+    Build a mortgage amortization schedule period-by-period until the loan is paid off.
+
+    Args:
+        loan_amount: Original mortgage principal
+        annual_interest_rate: Annual nominal rate as a percentage
+        loan_term_years: Loan term in years (can be fractional)
+        payments_per_year: Number of scheduled payments per year
+        start_date: Repayment start date
+        recurring_extra_payment: Fixed extra payment applied every period
+        custom_extra_payments: DataFrame with columns ['PMT NO', 'EXTRA PAYMENT']
+
+    Returns:
+        tuple[pd.DataFrame, dict]: Full schedule dataframe and summary metrics
+    """
+    total_scheduled_payments = loan_term_years * payments_per_year
+    scheduled_payment = calculate_scheduled_payment(
+        principal=loan_amount,
+        annual_interest_rate=annual_interest_rate,
+        total_payments=total_scheduled_payments,
+        payments_per_year=payments_per_year
+    )
+    rate_per_period = (annual_interest_rate / 100) / payments_per_year
+
+    # Build a lookup of one-off extra payments keyed by payment number.
+    custom_payment_lookup = {}
+    if custom_extra_payments is not None and not custom_extra_payments.empty:
+        cleaned_custom_payments = custom_extra_payments.copy()
+        cleaned_custom_payments = cleaned_custom_payments.dropna(subset=["PMT NO", "EXTRA PAYMENT"])
+
+        for _, row in cleaned_custom_payments.iterrows():
+            payment_no = int(row["PMT NO"])
+            extra_amount = float(row["EXTRA PAYMENT"])
+            if payment_no > 0 and extra_amount != 0:
+                custom_payment_lookup[payment_no] = custom_payment_lookup.get(payment_no, 0.0) + extra_amount
+
+    schedule_rows = []
+    beginning_balance = float(loan_amount)
+    cumulative_interest = 0.0
+    payment_number = 1
+
+    # Iterate until the mortgage is fully repaid.
+    # The original sheet appears to be monthly, so payment dates advance month-by-month.
+    months_per_payment = max(int(round(12 / payments_per_year)), 1)
+
+    while beginning_balance > 1e-8:
+        payment_date = start_date + relativedelta(months=(payment_number - 1) * months_per_payment)
+        interest = beginning_balance * rate_per_period
+        one_off_extra_payment = custom_payment_lookup.get(payment_number, 0.0)
+        extra_payment = float(recurring_extra_payment) + one_off_extra_payment
+        proposed_total_payment = scheduled_payment + extra_payment
+
+        # Cap the final payment so the loan never goes below zero.
+        payoff_amount = beginning_balance + interest
+        total_payment = min(proposed_total_payment, payoff_amount)
+        principal = total_payment - interest
+        ending_balance = max(beginning_balance - principal, 0.0)
+        cumulative_interest += interest
+
+        schedule_rows.append({
+            "PMT NO": payment_number,
+            "PAYMENT DATE": payment_date,
+            "BEGINNING BALANCE": beginning_balance,
+            "SCHEDULED PAYMENT": scheduled_payment,
+            "EXTRA PAYMENT": extra_payment,
+            "TOTAL PAYMENT": total_payment,
+            "PRINCIPAL": principal,
+            "INTEREST": interest,
+            "ENDING BALANCE": ending_balance,
+            "CUMULATIVE INTEREST": cumulative_interest
+        })
+
+        beginning_balance = ending_balance
+        payment_number += 1
+
+        # Safety guard to avoid an infinite loop on unexpected inputs.
+        if payment_number > max(int(total_scheduled_payments) * 5, 1000):
+            break
+
+    schedule_df = pd.DataFrame(schedule_rows)
+    actual_number_of_payments = len(schedule_df)
+    total_early_payments = schedule_df["EXTRA PAYMENT"].sum() if not schedule_df.empty else 0.0
+    total_interest = schedule_df["INTEREST"].sum() if not schedule_df.empty else 0.0
+    years_saved = (total_scheduled_payments - actual_number_of_payments) / payments_per_year
+
+    summary = {
+        "scheduled_payment": scheduled_payment,
+        "scheduled_number_of_payments": total_scheduled_payments,
+        "actual_number_of_payments": actual_number_of_payments,
+        "years_saved": years_saved,
+        "total_early_payments": total_early_payments,
+        "total_interest": total_interest
+    }
+
+    return schedule_df, summary
+
+
+def format_euro(amount):
+    """Format a numeric value as Euro currency."""
+    return f"€{amount:,.2f}"
+
+
+def prepare_schedule_for_display(schedule_df):
+    """
+    Format the amortization schedule for Streamlit display and CSV export friendliness.
+    """
+    display_df = schedule_df.copy()
+
+    if display_df.empty:
+        return display_df
+
+    display_df["PAYMENT DATE"] = pd.to_datetime(display_df["PAYMENT DATE"]).dt.strftime("%Y-%m-%d")
+
+    display_df = display_df.rename(columns={
+        "BEGINNING BALANCE": "BEGINNING BALANCE (€)",
+        "SCHEDULED PAYMENT": "SCHEDULED PAYMENT (€)",
+        "EXTRA PAYMENT": "EXTRA PAYMENT (€)",
+        "TOTAL PAYMENT": "TOTAL PAYMENT (€)",
+        "PRINCIPAL": "PRINCIPAL (€)",
+        "INTEREST": "INTEREST (€)",
+        "ENDING BALANCE": "ENDING BALANCE (€)",
+        "CUMULATIVE INTEREST": "CUMULATIVE INTEREST (€)"
+    })
+
+    currency_columns = [
+        "BEGINNING BALANCE (€)",
+        "SCHEDULED PAYMENT (€)",
+        "EXTRA PAYMENT (€)",
+        "TOTAL PAYMENT (€)",
+        "PRINCIPAL (€)",
+        "INTEREST (€)",
+        "ENDING BALANCE (€)",
+        "CUMULATIVE INTEREST (€)"
+    ]
+
+    for column in currency_columns:
+        display_df[column] = display_df[column].map(format_euro)
+
+    return display_df
+
+# Page: Mortgage Settings (in Settings tab)
+def page_mortgage_settings(key_prefix=""):
+    """Render the mortgage configuration settings page."""
+    st.subheader("🏠 Mortgage Configuration")
+    st.caption("Configure your mortgage details. These settings will be used in the Mortgage page.")
+    
+    # Initialize mortgage settings in session state if not present
+    if "mortgage_config" not in st.session_state:
+        st.session_state.mortgage_config = {
+            "lender_name": "Your Bank",
+            "loan_amount": 450586.0,
+            "interest_rate": 3.55,
+            "loan_term_years": 34.916,
+            "payments_per_year": 12,
+            "start_date": date(2024, 10, 7),
+            "recurring_extra_payment": 0.0
+        }
+    
+    st.info("💡 Enter your mortgage details below. These values will be used to calculate your amortization schedule on the Mortgage page.")
+    
+    # Create two columns for better layout
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        lender_name = st.text_input(
+            "Lender Name",
+            value=st.session_state.mortgage_config["lender_name"],
+            key=f"{key_prefix}lender_name",
+            help="Name of your mortgage lender or bank"
+        )
+        
+        loan_amount = st.number_input(
+            "Loan Amount (€)",
+            min_value=0.0,
+            value=st.session_state.mortgage_config["loan_amount"],
+            step=1000.0,
+            format="%.2f",
+            key=f"{key_prefix}loan_amount",
+            help="Total mortgage loan amount in Euros"
+        )
+        
+        interest_rate = st.number_input(
+            "Interest Rate (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=st.session_state.mortgage_config["interest_rate"],
+            step=0.01,
+            format="%.4f",
+            key=f"{key_prefix}interest_rate",
+            help="Annual interest rate as a percentage (e.g., 3.55 for 3.55%)"
+        )
+        
+        loan_term_years = st.number_input(
+            "Loan Term in Years",
+            min_value=0.0,
+            max_value=50.0,
+            value=st.session_state.mortgage_config["loan_term_years"],
+            step=0.1,
+            format="%.4f",
+            key=f"{key_prefix}loan_term_years",
+            help="Original loan term in years (can include decimals)"
+        )
+    
+    with col2:
+        payments_per_year = st.number_input(
+            "Payments Made Per Year",
+            min_value=1,
+            max_value=365,
+            value=st.session_state.mortgage_config["payments_per_year"],
+            step=1,
+            key=f"{key_prefix}payments_per_year",
+            help="Number of payments per year (typically 12 for monthly)"
+        )
+        
+        start_date = st.date_input(
+            "Loan Repayment Start Date",
+            value=st.session_state.mortgage_config["start_date"],
+            key=f"{key_prefix}start_date",
+            help="Date when loan repayments begin"
+        )
+        
+        recurring_extra_payment = st.number_input(
+            "Optional Extra Payments (€)",
+            min_value=0.0,
+            value=st.session_state.mortgage_config["recurring_extra_payment"],
+            step=100.0,
+            format="%.2f",
+            key=f"{key_prefix}recurring_extra_payment",
+            help="Additional amount to pay with each regular payment"
+        )
+    
+    st.divider()
+    
+    # Save button
+    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
+    
+    with col_btn1:
+        if st.button("💾 Save Configuration", key=f"{key_prefix}save_btn", type="primary", use_container_width=True):
+            # Update session state with new values
+            st.session_state.mortgage_config = {
+                "lender_name": lender_name,
+                "loan_amount": loan_amount,
+                "interest_rate": interest_rate,
+                "loan_term_years": loan_term_years,
+                "payments_per_year": payments_per_year,
+                "start_date": start_date,
+                "recurring_extra_payment": recurring_extra_payment
+            }
+            st.success("✅ Mortgage configuration saved successfully!")
+            st.info("📊 Go to the Mortgage page to view your amortization schedule.")
+    
+    with col_btn2:
+        if st.button("🔄 Reset to Defaults", key=f"{key_prefix}reset_btn", use_container_width=True):
+            st.session_state.mortgage_config = {
+                "lender_name": "Your Bank",
+                "loan_amount": 450586.0,
+                "interest_rate": 3.55,
+                "loan_term_years": 34.916,
+                "payments_per_year": 12,
+                "start_date": date(2024, 10, 7),
+                "recurring_extra_payment": 0.0
+            }
+            st.rerun()
+    
+    st.divider()
+    
+    # Display current configuration summary
+    st.subheader("📋 Current Configuration Summary")
+    
+    summary_col1, summary_col2 = st.columns(2)
+    
+    with summary_col1:
+        st.metric("Lender", st.session_state.mortgage_config["lender_name"])
+        st.metric("Loan Amount", format_euro(st.session_state.mortgage_config["loan_amount"]))
+        st.metric("Interest Rate", f"{st.session_state.mortgage_config['interest_rate']:.4f}%")
+        st.metric("Loan Term", f"{st.session_state.mortgage_config['loan_term_years']:.3f} years")
+    
+    with summary_col2:
+        st.metric("Payments Per Year", st.session_state.mortgage_config["payments_per_year"])
+        st.metric("Start Date", st.session_state.mortgage_config["start_date"].strftime("%d/%m/%Y"))
+        st.metric("Extra Payments", format_euro(st.session_state.mortgage_config["recurring_extra_payment"]))
+
+
+
+def page_mortgage():
+    """Render the mortgage amortization calculator."""
+    st.title("🏠 Mortgage Amortization Schedule: Kilmartin Grove")
+    st.caption("Interactive mortgage amortization calculator with recurring and one-off extra payments, fully formatted in Euros.")
+    
+    # Initialize mortgage configuration if not present
+    if "mortgage_config" not in st.session_state:
+        st.session_state.mortgage_config = {
+            "lender_name": "Your Bank",
+            "loan_amount": 450586.0,
+            "interest_rate": 3.55,
+            "loan_term_years": 34.916,
+            "payments_per_year": 12,
+            "start_date": date(2024, 10, 7),
+            "recurring_extra_payment": 0.0
+        }
+    
+    # Initialize editable one-off payment defaults once in session state.
+    if "mortgage_custom_payments" not in st.session_state:
+        st.session_state.mortgage_custom_payments = pd.DataFrame(
+            columns=["PMT NO", "EXTRA PAYMENT"]
+        )
+    
+    # Get values from saved configuration
+    lender_name = st.session_state.mortgage_config["lender_name"]
+    loan_amount = st.session_state.mortgage_config["loan_amount"]
+    interest_rate = st.session_state.mortgage_config["interest_rate"]
+    loan_term_years = st.session_state.mortgage_config["loan_term_years"]
+    payments_per_year = st.session_state.mortgage_config["payments_per_year"]
+    loan_start_date = st.session_state.mortgage_config["start_date"]
+    recurring_extra_payment = st.session_state.mortgage_config["recurring_extra_payment"]
+    
+    # Check if configuration is set (not default zeros)
+    if loan_amount == 0 or interest_rate == 0 or loan_term_years == 0:
+        st.warning("⚠️ Mortgage configuration not set. Please configure your mortgage details in Settings → Mortgage tab.")
+        st.info("👉 Go to **Settings** page and select the **🏠 Mortgage** tab to enter your mortgage details.")
+        return
+    
+    st.info("💡 To modify mortgage details, go to **Settings → Mortgage** tab.")
+    
+    # Display current mortgage configuration
+    st.markdown(f"### Loan Summary — {lender_name}")
+    
+    with st.expander("📋 View Mortgage Configuration", expanded=False):
+        config_col1, config_col2 = st.columns(2)
+        
+        with config_col1:
+            st.write("**Loan Amount:**", format_euro(loan_amount))
+            st.write("**Interest Rate:**", f"{interest_rate:.4f}%")
+            st.write("**Loan Term:**", f"{loan_term_years:.3f} years")
+        
+        with config_col2:
+            st.write("**Payments Per Year:**", payments_per_year)
+            st.write("**Start Date:**", loan_start_date.strftime("%d/%m/%Y"))
+            st.write("**Recurring Extra Payment:**", format_euro(recurring_extra_payment))
+    
+    st.write("#### One-Off / Custom Extra Payments")
+
+    edited_custom_payments = st.data_editor(
+        st.session_state.mortgage_custom_payments,
+        num_rows="dynamic",
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "PMT NO": st.column_config.NumberColumn(
+                "PMT NO",
+                min_value=1,
+                step=1,
+                format="%d",
+                help="Payment number to apply the one-off extra payment to."
+            ),
+            "EXTRA PAYMENT": st.column_config.NumberColumn(
+                "EXTRA PAYMENT (€)",
+                min_value=0.0,
+                step=100.0,
+                format="%.2f",
+                help="One-off extra payment amount in Euros."
+            )
+        },
+        key="mortgage_custom_payment_editor"
+    )
+
+    st.session_state.mortgage_custom_payments = edited_custom_payments
+
+    schedule_df, summary = generate_amortization_schedule(
+        loan_amount=loan_amount,
+        annual_interest_rate=interest_rate,
+        loan_term_years=loan_term_years,
+        payments_per_year=payments_per_year,
+        start_date=loan_start_date,
+        recurring_extra_payment=recurring_extra_payment,
+        custom_extra_payments=edited_custom_payments
+    )
+
+    metric_col_1, metric_col_2, metric_col_3 = st.columns(3)
+    metric_col_4, metric_col_5, metric_col_6 = st.columns(3)
+
+    metric_col_1.metric("Scheduled payment", format_euro(summary["scheduled_payment"]))
+    metric_col_2.metric("Scheduled number of payments", f'{summary["scheduled_number_of_payments"]:.2f}')
+    metric_col_3.metric("Actual number of payments", f'{summary["actual_number_of_payments"]}')
+
+    metric_col_4.metric("Years saved off original loan term", f'{summary["years_saved"]:.3f}')
+    metric_col_5.metric("Total early payments", format_euro(summary["total_early_payments"]))
+    metric_col_6.metric("Total interest", format_euro(summary["total_interest"]))
+
+    st.divider()
+    st.write("### Amortization Schedule")
+
+    display_df = prepare_schedule_for_display(schedule_df)
+
+    csv_buffer = StringIO()
+    schedule_df_for_csv = schedule_df.copy()
+    if not schedule_df_for_csv.empty:
+        schedule_df_for_csv["PAYMENT DATE"] = pd.to_datetime(schedule_df_for_csv["PAYMENT DATE"]).dt.strftime("%Y-%m-%d")
+        numeric_columns = [
+            "BEGINNING BALANCE",
+            "SCHEDULED PAYMENT",
+            "EXTRA PAYMENT",
+            "TOTAL PAYMENT",
+            "PRINCIPAL",
+            "INTEREST",
+            "ENDING BALANCE",
+            "CUMULATIVE INTEREST"
+        ]
+        schedule_df_for_csv[numeric_columns] = schedule_df_for_csv[numeric_columns].round(2)
+
+    schedule_df_for_csv.to_csv(csv_buffer, index=False)
+
+    st.download_button(
+        label="Download Amortization_Schedule.csv",
+        data=csv_buffer.getvalue(),
+        file_name="Amortization_Schedule.csv",
+        mime="text/csv",
+        type="primary"
+    )
+
+    st.dataframe(display_df, width="stretch", hide_index=True)
+
+    if not schedule_df.empty:
+        with st.expander("Custom extra payment dates"):
+            custom_payment_rows = []
+            custom_lookup = edited_custom_payments.dropna(subset=["PMT NO", "EXTRA PAYMENT"]).copy()
+
+            for _, row in custom_lookup.iterrows():
+                payment_no = int(row["PMT NO"])
+                extra_payment_amount = float(row["EXTRA PAYMENT"])
+
+                if payment_no > 0 and payment_no <= len(schedule_df):
+                    payment_date = schedule_df.loc[schedule_df["PMT NO"] == payment_no, "PAYMENT DATE"].iloc[0]
+                    custom_payment_rows.append({
+                        "PMT NO": payment_no,
+                        "DATE": pd.to_datetime(payment_date).strftime("%Y-%m-%d"),
+                        "EXTRA PAYMENT": format_euro(extra_payment_amount)
+                    })
+
+            if custom_payment_rows:
+                st.dataframe(pd.DataFrame(custom_payment_rows), width="stretch", hide_index=True)
+            else:
+                st.caption("No valid one-off extra payments configured.")
 
 
 
@@ -3053,13 +3638,11 @@ def render_calendar_widget():
     # Date selector for first reminder
     col1, col2 = st.columns(2)
     with col1:
-        with st.expander("📅 Select First Reminder Date", expanded=False):
-            start_date = st.date_input(
-                "First Reminder Date",
-                value=st.session_state.prev_calendar_start_date,
-                key="calendar_start_date",
-                label_visibility="collapsed"
-            )
+        start_date = st.date_input(
+            "First Reminder Date",
+            value=st.session_state.prev_calendar_start_date,
+            key="calendar_start_date"
+        )
         
         # Update previous date when changed
         if start_date != st.session_state.prev_calendar_start_date:
@@ -3149,15 +3732,6 @@ def render_navbar():
     # cols[0] is the spacer column (empty)
 
 
-@st.dialog("💹 Exchange Rate")
-def show_exchange_rate_modal():
-    """Display exchange rate in a modal dialog"""
-    render_exchange_rate_widget_inline()
-    if st.button("Close", key="close_exchange", type="primary", use_container_width=True):
-        st.session_state.show_exchange_rate_modal = False
-        st.rerun()
-
-
 def main():
     # Inject custom CSS for button styling
     inject_custom_css()
@@ -3180,23 +3754,19 @@ def main():
     settings_page = render_sidebar()
 
     # Check if a settings page is selected
-    if settings_page in ["Owners", "Accounts", "Commodities", "Currencies", "Exchange Rates", "Reminder"]:
+    if settings_page in ["Settings", "Exchange Rates", "Reminder", "Mortgage"]:
         # Show settings page
-        if settings_page == "Owners":
-            page_owners()
+        if settings_page == "Settings":
+            page_settings()
         elif settings_page == "Exchange Rates":
             page_exchange_rates()
-        elif settings_page == "Accounts":
-            page_accounts()
-        elif settings_page == "Commodities":
-            page_commodities()
-        elif settings_page == "Currencies":
-            page_currencies()
         elif settings_page == "Reminder":
             page_reminder()
+        elif settings_page == "Mortgage":
+            page_mortgage()
     else:
         # Render full navbar with all buttons for dashboard pages
-        render_navbar()
+        st.title("📊 Dashboard")
         
         # Custom CSS to make tabs larger
         st.markdown("""
