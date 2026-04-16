@@ -414,6 +414,10 @@ def render_sidebar():
         if st.button("📊 Dashboard", width="stretch"):
             st.session_state.settings_nav = None
             st.rerun()
+        
+        if st.button("🏠 Mortgage", width="stretch"):
+            st.session_state.settings_nav = "Mortgage"
+            st.rerun()
 
         if st.button("🔔 Reminder", width="stretch"):
             st.session_state.settings_nav = "Reminder"
@@ -421,10 +425,6 @@ def render_sidebar():
 
         if st.button("💹 Exchange Rates", width="stretch"):
             st.session_state.settings_nav = "Exchange Rates"
-            st.rerun()
-
-        if st.button("🏠 Mortgage", width="stretch"):
-            st.session_state.settings_nav = "Mortgage"
             st.rerun()
 
         st.divider()
@@ -667,6 +667,66 @@ def calculate_total_net_worth(snapshots, base_currency):
     return total
 
 
+def get_current_mortgage_balance():
+    """Get the current remaining mortgage balance"""
+    # Get mortgage settings
+    db_settings = db.get_mortgage_settings()
+    if not db_settings:
+        return 0.0
+    
+    # Get mortgage configuration
+    loan_amount = float(db_settings["loan_amount"])
+    interest_rate = float(db_settings["interest_rate"])
+    loan_term_years = float(db_settings["loan_term_years"])
+    payments_per_year = int(db_settings["payments_per_year"])
+    start_date = date.fromisoformat(db_settings["start_date"])
+    recurring_extra_payment = float(db_settings["recurring_extra_payment"])
+    
+    # Get extra payments
+    db_payments = db.get_mortgage_extra_payments()
+    if db_payments:
+        import pandas as pd
+        payments_data = [
+            {"PMT NO": int(p["payment_number"]), "EXTRA PAYMENT": float(p["extra_payment_amount"])}
+            for p in db_payments
+        ]
+        custom_payments = pd.DataFrame(payments_data)
+    else:
+        import pandas as pd
+        custom_payments = pd.DataFrame(columns=["PMT NO", "EXTRA PAYMENT"])
+    
+    # Generate amortization schedule
+    schedule_df, _ = generate_amortization_schedule(
+        loan_amount=loan_amount,
+        annual_interest_rate=interest_rate,
+        loan_term_years=loan_term_years,
+        payments_per_year=payments_per_year,
+        start_date=start_date,
+        recurring_extra_payment=recurring_extra_payment,
+        custom_extra_payments=custom_payments
+    )
+    
+    if schedule_df.empty:
+        return 0.0
+    
+    # Find the most recent payment that has occurred (payment date <= today)
+    from datetime import datetime
+    today = datetime.now().date()
+    schedule_df["PAYMENT DATE"] = pd.to_datetime(schedule_df["PAYMENT DATE"]).dt.date
+    
+    # Filter to payments that have already occurred
+    past_payments = schedule_df[schedule_df["PAYMENT DATE"] <= today]
+    
+    if past_payments.empty:
+        # No payments made yet, return original loan amount
+        return loan_amount
+    
+    # Get the ending balance from the most recent payment
+    current_balance = past_payments.iloc[-1]["ENDING BALANCE"]
+    
+    return float(current_balance)
+
+
 # Page: Dashboard
 def page_dashboard():    
     # Get default base currency (first enabled currency)
@@ -687,6 +747,57 @@ def page_dashboard():
     net_worths = {}
     for currency in enabled_currencies:
         net_worths[currency['code']] = calculate_total_net_worth(latest_snapshots, currency['code'])
+
+    # Get current mortgage balance (debt)
+    mortgage_balance = get_current_mortgage_balance()
+    
+    # Display Total Debt section if there is a mortgage
+    if mortgage_balance > 0:
+        st.subheader("Total Debt")
+        
+        # Get theme colors for metric cards
+        colors = get_theme_colors()
+        
+        # Display debt in all enabled currencies
+        debt_rows = []
+        num_currencies = len(enabled_currencies)
+        
+        if num_currencies <= 4:
+            debt_rows = [enabled_currencies]
+        elif num_currencies <= 6:
+            mid = (num_currencies + 1) // 2
+            debt_rows = [enabled_currencies[:mid], enabled_currencies[mid:]]
+        else:
+            third = (num_currencies + 2) // 3
+            debt_rows = [
+                enabled_currencies[:third],
+                enabled_currencies[third:third*2],
+                enabled_currencies[third*2:]
+            ]
+        
+        # Get exchange rates for currency conversion
+        rates = json.loads(latest_snapshots[0]["exchange_rates"]) if latest_snapshots[0].get("exchange_rates") else {}
+        
+        for row_currencies in debt_rows:
+            cols = st.columns(len(row_currencies))
+            
+            for idx, currency in enumerate(row_currencies):
+                with cols[idx]:
+                    curr_symbol = get_currency_symbol(currency['code'])
+                    # Convert mortgage balance from EUR to target currency
+                    debt_in_currency = get_converted_value(mortgage_balance, "EUR", currency['code'], rates)
+                    
+                    st.markdown(f"""
+                    <div style="background-color: {colors['bg_secondary']}; padding: 20px; border-radius: 10px; border-left: 5px solid #dc3545;">
+                        <p style="margin: 0; font-size: 14px; color: {colors['text_secondary']};">{currency['flag_emoji']} {currency['code']}</p>
+                        <p style="margin: 0; font-size: 28px; font-weight: bold; color: #dc3545;">{curr_symbol}{debt_in_currency:,.2f}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            if row_currencies != debt_rows[-1]:
+                st.write("")
+        
+        st.divider()
 
     # Display current net worth in all currencies with flags
     st.subheader("Current Net Worth")
@@ -1294,6 +1405,169 @@ def page_dashboard():
                 st.plotly_chart(fig_type, use_container_width=True)
         
         st.divider()
+        
+        # House Ownership Chart (if mortgage config exists)
+        # Initialize mortgage configuration if not present in session state
+        if "mortgage_config" not in st.session_state:
+            # Try to load from database
+            db_settings = db.get_mortgage_settings()
+            if db_settings:
+                st.session_state.mortgage_config = {
+                    "lender_name": db_settings["lender_name"],
+                    "loan_amount": float(db_settings["loan_amount"]),
+                    "interest_rate": float(db_settings["interest_rate"]),
+                    "loan_term_years": float(db_settings["loan_term_years"]),
+                    "payments_per_year": int(db_settings["payments_per_year"]),
+                    "start_date": date.fromisoformat(db_settings["start_date"]),
+                    "recurring_extra_payment": float(db_settings["recurring_extra_payment"]),
+                    "purchase_value": float(db_settings["purchase_value"]),
+                    "present_value": float(db_settings["present_value"])
+                }
+        
+        if "mortgage_config" in st.session_state:
+            mortgage_config = st.session_state.mortgage_config
+            
+            # Check if we have the necessary mortgage data
+            if (mortgage_config.get("loan_amount", 0) > 0 and
+                mortgage_config.get("present_value", 0) > 0):
+                
+                st.markdown("#### House Ownership Overview")
+                
+                # Calculate ownership metrics
+                present_value = mortgage_config.get("present_value", 0)
+                purchase_value = mortgage_config.get("purchase_value", 0)
+                
+                # Calculate current mortgage balance from schedule (nearest date)
+                try:
+                    # Get mortgage settings from database
+                    mortgage_settings = db.get_mortgage_settings()
+                    if mortgage_settings:
+                        # Get extra payments from database
+                        extra_payments_data = db.get_mortgage_extra_payments()
+                        custom_extra_payments = pd.DataFrame(extra_payments_data) if extra_payments_data else pd.DataFrame()
+                        if not custom_extra_payments.empty:
+                            custom_extra_payments = custom_extra_payments.rename(columns={
+                                'payment_number': 'PMT NO',
+                                'extra_payment_amount': 'EXTRA PAYMENT'
+                            })
+                        
+                        # Generate amortization schedule
+                        schedule_df, _ = generate_amortization_schedule(
+                            loan_amount=mortgage_settings['loan_amount'],
+                            annual_interest_rate=mortgage_settings['interest_rate'],
+                            loan_term_years=mortgage_settings['loan_term_years'],
+                            payments_per_year=mortgage_settings['payments_per_year'],
+                            start_date=date.fromisoformat(mortgage_settings['start_date']),
+                            recurring_extra_payment=mortgage_settings.get('recurring_extra_payment', 0.0),
+                            custom_extra_payments=custom_extra_payments
+                        )
+                        
+                        # Find the payment that has occurred most recently (on or before today)
+                        today = date.today()
+                        # Filter to only past/current payments
+                        past_payments = schedule_df[schedule_df['PAYMENT DATE'] <= today]
+                        
+                        if not past_payments.empty:
+                            # Use the most recent past payment's ending balance
+                            loan_amount = past_payments.iloc[-1]['ENDING BALANCE']
+                        else:
+                            # If no payments have been made yet, use the original loan amount
+                            loan_amount = mortgage_settings['loan_amount']
+                    else:
+                        # Fallback to initial loan amount if no settings found
+                        loan_amount = mortgage_config.get("loan_amount", 0)
+                except Exception as e:
+                    # Fallback to initial loan amount on any error
+                    # Print error for debugging
+                    import traceback
+                    print(f"Error calculating mortgage balance: {e}")
+                    print(traceback.format_exc())
+                    loan_amount = mortgage_config.get("loan_amount", 0)
+                
+                # Calculate equity (what you own)
+                equity = present_value - loan_amount
+                equity_percentage = (equity / present_value * 100) if present_value > 0 else 0
+                mortgage_percentage = (loan_amount / present_value * 100) if present_value > 0 else 0
+                
+                # Create three columns for metrics and chart
+                ownership_col1, ownership_col2, ownership_col3 = st.columns([1, 1, 2])
+                
+                with ownership_col1:
+                    st.metric("Present Value", format_euro(present_value))
+                    st.metric("Purchase Value", format_euro(purchase_value))
+                
+                with ownership_col2:
+                    st.metric("Your Equity", format_euro(equity))
+                    st.metric("Mortgage Balance", format_euro(loan_amount))
+                
+                with ownership_col3:
+                    # Create donut chart showing ownership split
+                    ownership_data = pd.DataFrame([
+                        {"Category": "Your Equity", "Value": equity},
+                        {"Category": "Mortgage Balance", "Value": loan_amount}
+                    ])
+                    
+                    fig_ownership = px.pie(
+                        ownership_data,
+                        values="Value",
+                        names="Category",
+                        title=f"Ownership Split",
+                        hole=0.5,  # Makes it a donut chart
+                        color="Category",
+                        color_discrete_map={
+                            "Your Equity": "#10b981",  # Green for equity
+                            "Mortgage Balance": "#ef4444"  # Red for mortgage
+                        }
+                    )
+                    
+                    fig_ownership.update_traces(
+                        textposition='inside',
+                        textinfo='percent',
+                        hovertemplate='<b>%{label}</b><br>Value: €%{value:,.2f}<br>Percentage: %{percent}<extra></extra>',
+                        textfont_size=16
+                    )
+                    
+                    # Get theme colors
+                    colors = get_theme_colors()
+                    
+                    fig_ownership.update_layout(
+                        plot_bgcolor=colors['plot_bg'],
+                        paper_bgcolor=colors['plot_bg'],
+                        font=dict(color=colors['plot_text']),
+                        title_font=dict(color=colors['text_primary'], size=16),
+                        hoverlabel=dict(
+                            bgcolor=colors['surface'],
+                            font_size=13,
+                            font_family="Arial, sans-serif",
+                            font_color=colors['text_primary']
+                        ),
+                        showlegend=True,
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=-0.2,
+                            xanchor="center",
+                            x=0.5,
+                            bgcolor=colors['surface'],
+                            bordercolor=colors['border'],
+                            borderwidth=1,
+                            font=dict(color=colors['text_primary'])
+                        ),
+                        annotations=[
+                            dict(
+                                text=f"{equity_percentage:.1f}%<br>Owned",
+                                x=0.5, y=0.5,
+                                font_size=20,
+                                font_color=colors['text_primary'],
+                                showarrow=False
+                            )
+                        ]
+                    )
+                    
+                    st.plotly_chart(fig_ownership, use_container_width=True)
+                
+                st.caption("💡 Based on present market value and current mortgage balance from Settings → Mortgage")
+                st.divider()
 
         # Year-over-year comparison if we have enough data
         if len(snapshot_dates) >= 12:
@@ -3326,15 +3600,33 @@ def page_mortgage_settings(key_prefix=""):
     
     # Initialize mortgage settings in session state if not present
     if "mortgage_config" not in st.session_state:
-        st.session_state.mortgage_config = {
-            "lender_name": "Your Bank",
-            "loan_amount": 450586.0,
-            "interest_rate": 3.55,
-            "loan_term_years": 34.916,
-            "payments_per_year": 12,
-            "start_date": date(2024, 10, 7),
-            "recurring_extra_payment": 0.0
-        }
+        # Try to load from database first
+        db_settings = db.get_mortgage_settings()
+        if db_settings:
+            st.session_state.mortgage_config = {
+                "lender_name": db_settings["lender_name"],
+                "loan_amount": float(db_settings["loan_amount"]),
+                "interest_rate": float(db_settings["interest_rate"]),
+                "loan_term_years": float(db_settings["loan_term_years"]),
+                "payments_per_year": int(db_settings["payments_per_year"]),
+                "start_date": date.fromisoformat(db_settings["start_date"]),
+                "recurring_extra_payment": float(db_settings["recurring_extra_payment"]),
+                "purchase_value": float(db_settings["purchase_value"]),
+                "present_value": float(db_settings["present_value"])
+            }
+        else:
+            # Use default values if no database settings exist
+            st.session_state.mortgage_config = {
+                "lender_name": "Your Bank",
+                "loan_amount": 450586.0,
+                "interest_rate": 3.55,
+                "loan_term_years": 34.916,
+                "payments_per_year": 12,
+                "start_date": date(2024, 10, 7),
+                "recurring_extra_payment": 0.0,
+                "purchase_value": 500000.0,
+                "present_value": 550000.0
+            }
     
     st.info("💡 Enter your mortgage details below. These values will be used to calculate your amortization schedule on the Mortgage page.")
     
@@ -3410,6 +3702,33 @@ def page_mortgage_settings(key_prefix=""):
         )
     
     st.divider()
+    st.markdown("#### 🏡 Property Value Information")
+    
+    col3, col4 = st.columns(2)
+    
+    with col3:
+        purchase_value = st.number_input(
+            "Purchase Value (€)",
+            min_value=0.0,
+            value=st.session_state.mortgage_config.get("purchase_value", 500000.0),
+            step=1000.0,
+            format="%.2f",
+            key=f"{key_prefix}purchase_value",
+            help="Original purchase price of the property"
+        )
+    
+    with col4:
+        present_value = st.number_input(
+            "Present Market Value (€)",
+            min_value=0.0,
+            value=st.session_state.mortgage_config.get("present_value", 550000.0),
+            step=1000.0,
+            format="%.2f",
+            key=f"{key_prefix}present_value",
+            help="Current estimated market value of the property"
+        )
+    
+    st.divider()
     
     # Save button
     col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
@@ -3424,9 +3743,25 @@ def page_mortgage_settings(key_prefix=""):
                 "loan_term_years": loan_term_years,
                 "payments_per_year": payments_per_year,
                 "start_date": start_date,
-                "recurring_extra_payment": recurring_extra_payment
+                "recurring_extra_payment": recurring_extra_payment,
+                "purchase_value": purchase_value,
+                "present_value": present_value
             }
-            st.success("✅ Mortgage configuration saved successfully!")
+            
+            # Save to database
+            db.save_mortgage_settings(
+                lender_name=lender_name,
+                loan_amount=loan_amount,
+                interest_rate=interest_rate,
+                loan_term_years=loan_term_years,
+                payments_per_year=payments_per_year,
+                start_date=start_date,
+                recurring_extra_payment=recurring_extra_payment,
+                purchase_value=purchase_value,
+                present_value=present_value
+            )
+            
+            st.success("✅ Mortgage configuration saved successfully to database!")
             st.info("📊 Go to the Mortgage page to view your amortization schedule.")
     
     with col_btn2:
@@ -3438,7 +3773,9 @@ def page_mortgage_settings(key_prefix=""):
                 "loan_term_years": 34.916,
                 "payments_per_year": 12,
                 "start_date": date(2024, 10, 7),
-                "recurring_extra_payment": 0.0
+                "recurring_extra_payment": 0.0,
+                "purchase_value": 500000.0,
+                "present_value": 550000.0
             }
             st.rerun()
     
@@ -3459,6 +3796,26 @@ def page_mortgage_settings(key_prefix=""):
         st.metric("Payments Per Year", st.session_state.mortgage_config["payments_per_year"])
         st.metric("Start Date", st.session_state.mortgage_config["start_date"].strftime("%d/%m/%Y"))
         st.metric("Extra Payments", format_euro(st.session_state.mortgage_config["recurring_extra_payment"]))
+    
+    st.divider()
+    
+    # Property value summary
+    st.subheader("🏡 Property Value Summary")
+    
+    prop_col1, prop_col2, prop_col3 = st.columns(3)
+    
+    purchase_val = st.session_state.mortgage_config.get("purchase_value", 500000.0)
+    present_val = st.session_state.mortgage_config.get("present_value", 550000.0)
+    down_payment = purchase_val - st.session_state.mortgage_config["loan_amount"]
+    
+    with prop_col1:
+        st.metric("Purchase Value", format_euro(purchase_val))
+    
+    with prop_col2:
+        st.metric("Present Market Value", format_euro(present_val))
+    
+    with prop_col3:
+        st.metric("Down Payment", format_euro(down_payment))
 
 
 
@@ -3469,21 +3826,48 @@ def page_mortgage():
     
     # Initialize mortgage configuration if not present
     if "mortgage_config" not in st.session_state:
-        st.session_state.mortgage_config = {
-            "lender_name": "Your Bank",
-            "loan_amount": 450586.0,
-            "interest_rate": 3.55,
-            "loan_term_years": 34.916,
-            "payments_per_year": 12,
-            "start_date": date(2024, 10, 7),
-            "recurring_extra_payment": 0.0
-        }
+        # Try to load from database first
+        db_settings = db.get_mortgage_settings()
+        if db_settings:
+            st.session_state.mortgage_config = {
+                "lender_name": db_settings["lender_name"],
+                "loan_amount": float(db_settings["loan_amount"]),
+                "interest_rate": float(db_settings["interest_rate"]),
+                "loan_term_years": float(db_settings["loan_term_years"]),
+                "payments_per_year": int(db_settings["payments_per_year"]),
+                "start_date": date.fromisoformat(db_settings["start_date"]),
+                "recurring_extra_payment": float(db_settings["recurring_extra_payment"]),
+                "purchase_value": float(db_settings["purchase_value"]),
+                "present_value": float(db_settings["present_value"])
+            }
+        else:
+            # Use default values if no database settings exist
+            st.session_state.mortgage_config = {
+                "lender_name": "Your Bank",
+                "loan_amount": 450586.0,
+                "interest_rate": 3.55,
+                "loan_term_years": 34.916,
+                "payments_per_year": 12,
+                "start_date": date(2024, 10, 7),
+                "recurring_extra_payment": 0.0,
+                "purchase_value": 500000.0,
+                "present_value": 550000.0
+            }
     
     # Initialize editable one-off payment defaults once in session state.
     if "mortgage_custom_payments" not in st.session_state:
-        st.session_state.mortgage_custom_payments = pd.DataFrame(
-            columns=["PMT NO", "EXTRA PAYMENT"]
-        )
+        # Try to load from database first
+        db_payments = db.get_mortgage_extra_payments()
+        if db_payments:
+            payments_data = [
+                {"PMT NO": int(p["payment_number"]), "EXTRA PAYMENT": float(p["extra_payment_amount"])}
+                for p in db_payments
+            ]
+            st.session_state.mortgage_custom_payments = pd.DataFrame(payments_data)
+        else:
+            st.session_state.mortgage_custom_payments = pd.DataFrame(
+                columns=["PMT NO", "EXTRA PAYMENT"]
+            )
     
     # Get values from saved configuration
     lender_name = st.session_state.mortgage_config["lender_name"]
@@ -3517,6 +3901,24 @@ def page_mortgage():
             st.write("**Payments Per Year:**", payments_per_year)
             st.write("**Start Date:**", loan_start_date.strftime("%d/%m/%Y"))
             st.write("**Recurring Extra Payment:**", format_euro(recurring_extra_payment))
+        
+        st.divider()
+        
+        # Property value information
+        purchase_val = st.session_state.mortgage_config.get("purchase_value", 500000.0)
+        present_val = st.session_state.mortgage_config.get("present_value", 550000.0)
+        down_payment = purchase_val - loan_amount
+        equity = present_val - loan_amount
+        
+        prop_col1, prop_col2 = st.columns(2)
+        
+        with prop_col1:
+            st.write("**Purchase Value:**", format_euro(purchase_val))
+            st.write("**Down Payment:**", format_euro(down_payment))
+        
+        with prop_col2:
+            st.write("**Present Market Value:**", format_euro(present_val))
+            st.write("**Current Equity:**", format_euro(equity))
     
     st.write("#### One-Off / Custom Extra Payments")
 
@@ -3544,7 +3946,22 @@ def page_mortgage():
         key="mortgage_custom_payment_editor"
     )
 
-    st.session_state.mortgage_custom_payments = edited_custom_payments
+    # Save extra payments to database when they change
+    if not edited_custom_payments.equals(st.session_state.mortgage_custom_payments):
+        st.session_state.mortgage_custom_payments = edited_custom_payments
+        
+        # Save to database
+        payments_to_save = []
+        for _, row in edited_custom_payments.iterrows():
+            if pd.notna(row["PMT NO"]) and pd.notna(row["EXTRA PAYMENT"]):
+                payments_to_save.append({
+                    "payment_number": int(row["PMT NO"]),
+                    "extra_payment_amount": float(row["EXTRA PAYMENT"])
+                })
+        
+        db.save_mortgage_extra_payments(payments_to_save)
+    else:
+        st.session_state.mortgage_custom_payments = edited_custom_payments
 
     schedule_df, summary = generate_amortization_schedule(
         loan_amount=loan_amount,

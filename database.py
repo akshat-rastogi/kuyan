@@ -108,6 +108,40 @@ class Database:
             if 'unit' not in columns:
                 cursor.execute("ALTER TABLE commodities ADD COLUMN unit TEXT NOT NULL DEFAULT 'ounce'")
 
+            # Mortgage settings table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS mortgage_settings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    lender_name TEXT NOT NULL,
+                    loan_amount DECIMAL(15,2) NOT NULL,
+                    interest_rate DECIMAL(10,4) NOT NULL,
+                    loan_term_years DECIMAL(10,4) NOT NULL,
+                    payments_per_year INTEGER NOT NULL,
+                    start_date DATE NOT NULL,
+                    recurring_extra_payment DECIMAL(15,2) NOT NULL DEFAULT 0.0,
+                    purchase_value DECIMAL(15,2) NOT NULL DEFAULT 0.0,
+                    present_value DECIMAL(15,2) NOT NULL DEFAULT 0.0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Mortgage extra payments table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS mortgage_extra_payments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    payment_number INTEGER NOT NULL,
+                    extra_payment_amount DECIMAL(15,2) NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Create index for faster queries on payment number
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_payment_number
+                ON mortgage_extra_payments(payment_number)
+            """)
+
             # Seed default owners if table is empty
             cursor.execute("SELECT COUNT(*) FROM owners")
             if cursor.fetchone()[0] == 0:
@@ -696,3 +730,107 @@ class Database:
                 WHERE id = ?
             """, (new_unit, commodity_id))
             return cursor.rowcount > 0
+
+
+    # Mortgage Settings Operations
+    def get_mortgage_settings(self) -> Optional[Dict]:
+        """Get the current mortgage settings (returns the most recent one)"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, lender_name, loan_amount, interest_rate, loan_term_years,
+                       payments_per_year, start_date, recurring_extra_payment,
+                       purchase_value, present_value, created_at, updated_at
+                FROM mortgage_settings
+                ORDER BY id DESC
+                LIMIT 1
+            """)
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def save_mortgage_settings(self, lender_name: str, loan_amount: float, interest_rate: float,
+                               loan_term_years: float, payments_per_year: int, start_date: date,
+                               recurring_extra_payment: float = 0.0, purchase_value: float = 0.0,
+                               present_value: float = 0.0) -> int:
+        """Save or update mortgage settings"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Check if settings already exist
+            cursor.execute("SELECT id FROM mortgage_settings ORDER BY id DESC LIMIT 1")
+            existing = cursor.fetchone()
+            
+            if existing:
+                # Update existing settings
+                cursor.execute("""
+                    UPDATE mortgage_settings
+                    SET lender_name = ?, loan_amount = ?, interest_rate = ?,
+                        loan_term_years = ?, payments_per_year = ?, start_date = ?,
+                        recurring_extra_payment = ?, purchase_value = ?, present_value = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (lender_name, loan_amount, interest_rate, loan_term_years,
+                      payments_per_year, start_date.isoformat(), recurring_extra_payment,
+                      purchase_value, present_value, existing[0]))
+                return existing[0]
+            else:
+                # Insert new settings
+                cursor.execute("""
+                    INSERT INTO mortgage_settings (lender_name, loan_amount, interest_rate,
+                                                   loan_term_years, payments_per_year, start_date,
+                                                   recurring_extra_payment, purchase_value, present_value)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (lender_name, loan_amount, interest_rate, loan_term_years,
+                      payments_per_year, start_date.isoformat(), recurring_extra_payment,
+                      purchase_value, present_value))
+                return cursor.lastrowid or 0
+
+    # Mortgage Extra Payments Operations
+    def get_mortgage_extra_payments(self) -> List[Dict]:
+        """Get all mortgage extra payments"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, payment_number, extra_payment_amount, created_at
+                FROM mortgage_extra_payments
+                ORDER BY payment_number
+            """)
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    def save_mortgage_extra_payments(self, payments_data: List[Dict]):
+        """Save mortgage extra payments (replaces all existing payments)"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Clear existing payments
+            cursor.execute("DELETE FROM mortgage_extra_payments")
+            
+            # Insert new payments
+            for payment in payments_data:
+                cursor.execute("""
+                    INSERT INTO mortgage_extra_payments (payment_number, extra_payment_amount)
+                    VALUES (?, ?)
+                """, (payment['payment_number'], payment['extra_payment_amount']))
+
+    def add_mortgage_extra_payment(self, payment_number: int, extra_payment_amount: float) -> int:
+        """Add a single mortgage extra payment"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO mortgage_extra_payments (payment_number, extra_payment_amount)
+                VALUES (?, ?)
+            """, (payment_number, extra_payment_amount))
+            return cursor.lastrowid or 0
+
+    def delete_mortgage_extra_payment(self, payment_id: int):
+        """Delete a specific mortgage extra payment"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM mortgage_extra_payments WHERE id = ?", (payment_id,))
+
+    def clear_mortgage_extra_payments(self):
+        """Clear all mortgage extra payments"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM mortgage_extra_payments")
