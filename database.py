@@ -58,6 +58,14 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            
+            # Add commodity and unit columns if they don't exist (for existing databases)
+            cursor.execute("PRAGMA table_info(accounts)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'commodity' not in columns:
+                cursor.execute("ALTER TABLE accounts ADD COLUMN commodity TEXT")
+            if 'unit' not in columns:
+                cursor.execute("ALTER TABLE accounts ADD COLUMN unit TEXT")
 
             # Snapshots table
             cursor.execute("""
@@ -120,6 +128,7 @@ class Database:
                     loan_term_years DECIMAL(10,4) NOT NULL,
                     payments_per_year INTEGER NOT NULL,
                     start_date DATE NOT NULL,
+                    defer_months INTEGER NOT NULL DEFAULT 0,
                     recurring_extra_payment DECIMAL(15,2) NOT NULL DEFAULT 0.0,
                     purchase_value DECIMAL(15,2) NOT NULL DEFAULT 0.0,
                     present_value DECIMAL(15,2) NOT NULL DEFAULT 0.0,
@@ -167,6 +176,9 @@ class Database:
             
             if 'currency' not in columns:
                 cursor.execute("ALTER TABLE mortgage_settings ADD COLUMN currency TEXT NOT NULL DEFAULT 'EUR'")
+            
+            if 'defer_months' not in columns:
+                cursor.execute("ALTER TABLE mortgage_settings ADD COLUMN defer_months INTEGER NOT NULL DEFAULT 0")
 
             # Mortgage extra payments table
             # NOTE: No default extra payments are seeded. Users must configure manually.
@@ -325,68 +337,38 @@ class Database:
             return count > 0
 
     # Account Operations
-    def add_account(self, name: str, owner: str, account_type: str, currency: str, commodity: Optional[str] = None) -> int:
+    def add_account(self, name: str, owner: str, account_type: str, currency: str, commodity: Optional[str] = None, unit: Optional[str] = None) -> int:
         """Add a new account (currency for Bank/Investment/Other, commodity for Commodity type)"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
-            # Check if commodity column exists, if not add it
-            cursor.execute("PRAGMA table_info(accounts)")
-            columns = [column[1] for column in cursor.fetchall()]
-            if 'commodity' not in columns:
-                cursor.execute("ALTER TABLE accounts ADD COLUMN commodity TEXT")
-            
             cursor.execute("""
-                INSERT INTO accounts (name, owner, account_type, currency, commodity)
-                VALUES (?, ?, ?, ?, ?)
-            """, (name, owner, account_type, currency, commodity))
+                INSERT INTO accounts (name, owner, account_type, currency, commodity, unit)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (name, owner, account_type, currency, commodity, unit))
             return cursor.lastrowid
 
     def get_accounts(self) -> List[Dict]:
         """Get all accounts"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
-            # Check if commodity column exists
-            cursor.execute("PRAGMA table_info(accounts)")
-            columns = [column[1] for column in cursor.fetchall()]
-            
-            if 'commodity' in columns:
-                cursor.execute("""
-                    SELECT id, name, owner, account_type, currency, commodity, created_at
-                    FROM accounts
-                    ORDER BY owner, name
-                """)
-            else:
-                cursor.execute("""
-                    SELECT id, name, owner, account_type, currency, created_at
-                    FROM accounts
-                    ORDER BY owner, name
-                """)
+            cursor.execute("""
+                SELECT id, name, owner, account_type, currency, commodity, unit, created_at
+                FROM accounts
+                ORDER BY owner, name
+            """)
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
 
-    def update_account(self, account_id: int, name: str, owner: str, account_type: str, currency: str, commodity: Optional[str] = None):
+    def update_account(self, account_id: int, name: str, owner: str, account_type: str, currency: str, commodity: Optional[str] = None, unit: Optional[str] = None):
         """Update an existing account"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
-            # Check if commodity column exists
-            cursor.execute("PRAGMA table_info(accounts)")
-            columns = [column[1] for column in cursor.fetchall()]
-            
-            if 'commodity' in columns:
-                cursor.execute("""
-                    UPDATE accounts
-                    SET name = ?, owner = ?, account_type = ?, currency = ?, commodity = ?
-                    WHERE id = ?
-                """, (name, owner, account_type, currency, commodity, account_id))
-            else:
-                cursor.execute("""
-                    UPDATE accounts
-                    SET name = ?, owner = ?, account_type = ?, currency = ?
-                    WHERE id = ?
-                """, (name, owner, account_type, currency, account_id))
+            cursor.execute("""
+                UPDATE accounts
+                SET name = ?, owner = ?, account_type = ?, currency = ?, commodity = ?, unit = ?
+                WHERE id = ?
+            """, (name, owner, account_type, currency, commodity, unit, account_id))
 
     def delete_account(self, account_id: int):
         """Delete an account and all its snapshots"""
@@ -410,29 +392,16 @@ class Database:
         """Get all snapshots for a specific date"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
-            # Check if commodity column exists
-            cursor.execute("PRAGMA table_info(accounts)")
-            columns = [column[1] for column in cursor.fetchall()]
-            
-            if 'commodity' in columns:
-                cursor.execute("""
-                    SELECT s.id, s.snapshot_date, s.account_id, s.balance, s.exchange_rates,
-                           a.name, a.owner, a.account_type, a.currency, a.commodity
-                    FROM snapshots s
-                    JOIN accounts a ON s.account_id = a.id
-                    WHERE s.snapshot_date = ?
-                    ORDER BY a.owner, a.name
-                """, (snapshot_date.isoformat(),))
-            else:
-                cursor.execute("""
-                    SELECT s.id, s.snapshot_date, s.account_id, s.balance, s.exchange_rates,
-                           a.name, a.owner, a.account_type, a.currency
-                    FROM snapshots s
-                    JOIN accounts a ON s.account_id = a.id
-                    WHERE s.snapshot_date = ?
-                    ORDER BY a.owner, a.name
-                """, (snapshot_date.isoformat(),))
+            cursor.execute("""
+                SELECT s.id, s.snapshot_date, s.account_id, s.balance, s.exchange_rates,
+                       a.name, a.owner, a.account_type, a.currency, a.commodity,
+                       COALESCE(a.unit, c.unit) as commodity_unit
+                FROM snapshots s
+                JOIN accounts a ON s.account_id = a.id
+                LEFT JOIN commodities c ON a.commodity = c.name
+                WHERE s.snapshot_date = ?
+                ORDER BY a.owner, a.name
+            """, (snapshot_date.isoformat(),))
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
 
@@ -440,33 +409,18 @@ class Database:
         """Get the most recent snapshots for all accounts"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
-            # Check if commodity column exists
-            cursor.execute("PRAGMA table_info(accounts)")
-            columns = [column[1] for column in cursor.fetchall()]
-            
-            if 'commodity' in columns:
-                cursor.execute("""
-                    SELECT s.id, s.snapshot_date, s.account_id, s.balance, s.exchange_rates,
-                           a.name, a.owner, a.account_type, a.currency, a.commodity
-                    FROM snapshots s
-                    JOIN accounts a ON s.account_id = a.id
-                    WHERE s.snapshot_date = (
-                        SELECT MAX(snapshot_date) FROM snapshots
-                    )
-                    ORDER BY a.owner, a.name
-                """)
-            else:
-                cursor.execute("""
-                    SELECT s.id, s.snapshot_date, s.account_id, s.balance, s.exchange_rates,
-                           a.name, a.owner, a.account_type, a.currency
-                    FROM snapshots s
-                    JOIN accounts a ON s.account_id = a.id
-                    WHERE s.snapshot_date = (
-                        SELECT MAX(snapshot_date) FROM snapshots
-                    )
-                    ORDER BY a.owner, a.name
-                """)
+            cursor.execute("""
+                SELECT s.id, s.snapshot_date, s.account_id, s.balance, s.exchange_rates,
+                       a.name, a.owner, a.account_type, a.currency, a.commodity,
+                       COALESCE(a.unit, c.unit) as commodity_unit
+                FROM snapshots s
+                JOIN accounts a ON s.account_id = a.id
+                LEFT JOIN commodities c ON a.commodity = c.name
+                WHERE s.snapshot_date = (
+                    SELECT MAX(snapshot_date) FROM snapshots
+                )
+                ORDER BY a.owner, a.name
+            """)
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
 
@@ -795,7 +749,7 @@ class Database:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT id, mortgage_name, lender_name, loan_amount, interest_rate, loan_term_years,
-                       payments_per_year, start_date, recurring_extra_payment,
+                       payments_per_year, start_date, defer_months, recurring_extra_payment,
                        purchase_value, present_value, currency, created_at, updated_at
                 FROM mortgage_settings
                 ORDER BY mortgage_name
@@ -809,7 +763,7 @@ class Database:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT id, mortgage_name, lender_name, loan_amount, interest_rate, loan_term_years,
-                       payments_per_year, start_date, recurring_extra_payment,
+                       payments_per_year, start_date, defer_months, recurring_extra_payment,
                        purchase_value, present_value, currency, created_at, updated_at
                 FROM mortgage_settings
                 WHERE id = ?
@@ -823,7 +777,7 @@ class Database:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT id, mortgage_name, lender_name, loan_amount, interest_rate, loan_term_years,
-                       payments_per_year, start_date, recurring_extra_payment,
+                       payments_per_year, start_date, defer_months, recurring_extra_payment,
                        purchase_value, present_value, currency, created_at, updated_at
                 FROM mortgage_settings
                 WHERE mortgage_name = ?
@@ -838,24 +792,24 @@ class Database:
 
     def add_mortgage(self, mortgage_name: str, lender_name: str, loan_amount: float, interest_rate: float,
                      loan_term_years: float, payments_per_year: int, start_date: date,
-                     recurring_extra_payment: float = 0.0, purchase_value: float = 0.0,
+                     defer_months: int = 0, recurring_extra_payment: float = 0.0, purchase_value: float = 0.0,
                      present_value: float = 0.0, currency: str = "EUR") -> int:
         """Add a new mortgage"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO mortgage_settings (mortgage_name, lender_name, loan_amount, interest_rate,
-                                               loan_term_years, payments_per_year, start_date,
+                                               loan_term_years, payments_per_year, start_date, defer_months,
                                                recurring_extra_payment, purchase_value, present_value, currency)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (mortgage_name, lender_name, loan_amount, interest_rate, loan_term_years,
-                  payments_per_year, start_date.isoformat(), recurring_extra_payment,
+                  payments_per_year, start_date.isoformat(), defer_months, recurring_extra_payment,
                   purchase_value, present_value, currency))
             return cursor.lastrowid or 0
 
     def update_mortgage(self, mortgage_id: int, mortgage_name: str, lender_name: str, loan_amount: float,
                         interest_rate: float, loan_term_years: float, payments_per_year: int, start_date: date,
-                        recurring_extra_payment: float = 0.0, purchase_value: float = 0.0,
+                        defer_months: int = 0, recurring_extra_payment: float = 0.0, purchase_value: float = 0.0,
                         present_value: float = 0.0, currency: str = "EUR"):
         """Update an existing mortgage"""
         with self.get_connection() as conn:
@@ -863,12 +817,12 @@ class Database:
             cursor.execute("""
                 UPDATE mortgage_settings
                 SET mortgage_name = ?, lender_name = ?, loan_amount = ?, interest_rate = ?,
-                    loan_term_years = ?, payments_per_year = ?, start_date = ?,
+                    loan_term_years = ?, payments_per_year = ?, start_date = ?, defer_months = ?,
                     recurring_extra_payment = ?, purchase_value = ?, present_value = ?,
                     currency = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (mortgage_name, lender_name, loan_amount, interest_rate, loan_term_years,
-                  payments_per_year, start_date.isoformat(), recurring_extra_payment,
+                  payments_per_year, start_date.isoformat(), defer_months, recurring_extra_payment,
                   purchase_value, present_value, currency, mortgage_id))
 
     def delete_mortgage(self, mortgage_id: int):

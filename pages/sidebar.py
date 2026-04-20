@@ -42,12 +42,12 @@ def sidebar(is_sandbox):
             st.session_state.settings_nav = None
             st.rerun()
         
-        if st.button("💰 Accounts", width="stretch"):
-            st.session_state.settings_nav = "Accounts"
-            st.rerun()
-        
         if st.button("📜 History", width="stretch"):
             st.session_state.settings_nav = "History"
+            st.rerun()
+
+        if st.button("💰 Update Accounts", width="stretch"):
+            st.session_state.settings_nav = "Accounts"
             st.rerun()
 
         if st.button("💹 Exchange Rates", width="stretch"):

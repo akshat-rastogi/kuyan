@@ -55,6 +55,7 @@ def mortgage_settings(db: Database, key_prefix=""):
                 "loan_term_years": 0.0,
                 "payments_per_year": 12,
                 "start_date": date.today(),
+                "defer_months": 0,
                 "recurring_extra_payment": 0.0,
                 "purchase_value": 0.0,
                 "present_value": 0.0,
@@ -162,10 +163,20 @@ def mortgage_settings(db: Database, key_prefix=""):
                         start_date_value = date.fromisoformat(start_date_value)
                     
                     start_date = st.date_input(
-                        "Loan Repayment Start Date",
+                        "Loan Start Date",
                         value=start_date_value,
                         key=f"{key_prefix}start_date_{idx}",
-                        help="Date when loan repayments begin"
+                        help="Date when the mortgage/loan started"
+                    )
+                    
+                    defer_months = st.number_input(
+                        "Defer Payments By (Months)",
+                        min_value=0,
+                        max_value=120,
+                        value=int(mortgage.get("defer_months", 0)),
+                        step=1,
+                        key=f"{key_prefix}defer_months_{idx}",
+                        help="Number of months to defer payments after loan start date (0 = payments start immediately)"
                     )
                     
                     recurring_extra_payment = st.number_input(
@@ -228,6 +239,7 @@ def mortgage_settings(db: Database, key_prefix=""):
                                 loan_term_years=loan_term_years,
                                 payments_per_year=payments_per_year,
                                 start_date=start_date,
+                                defer_months=defer_months,
                                 recurring_extra_payment=recurring_extra_payment,
                                 purchase_value=purchase_value,
                                 present_value=present_value,
@@ -244,6 +256,7 @@ def mortgage_settings(db: Database, key_prefix=""):
                                 loan_term_years=loan_term_years,
                                 payments_per_year=payments_per_year,
                                 start_date=start_date,
+                                defer_months=defer_months,
                                 recurring_extra_payment=recurring_extra_payment,
                                 purchase_value=purchase_value,
                                 present_value=present_value,
@@ -260,6 +273,7 @@ def mortgage_settings(db: Database, key_prefix=""):
                         mortgage['loan_term_years'] = loan_term_years
                         mortgage['payments_per_year'] = payments_per_year
                         mortgage['start_date'] = start_date
+                        mortgage['defer_months'] = defer_months
                         mortgage['recurring_extra_payment'] = recurring_extra_payment
                         mortgage['purchase_value'] = purchase_value
                         mortgage['present_value'] = present_value

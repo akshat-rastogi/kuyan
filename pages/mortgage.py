@@ -92,6 +92,7 @@ def mortgage(db: Database):
     loan_term_years = float(selected_mortgage["loan_term_years"])
     payments_per_year = int(selected_mortgage["payments_per_year"])
     loan_start_date = date.fromisoformat(selected_mortgage["start_date"]) if isinstance(selected_mortgage["start_date"], str) else selected_mortgage["start_date"]
+    defer_months = int(selected_mortgage.get("defer_months", 0))
     recurring_extra_payment = float(selected_mortgage["recurring_extra_payment"])
     currency = selected_mortgage.get("currency", "EUR")
     
@@ -112,6 +113,7 @@ def mortgage(db: Database):
         with config_col2:
             st.write("**Payments Per Year:**", payments_per_year)
             st.write("**Start Date:**", loan_start_date.strftime("%d/%m/%Y"))
+            st.write("**Deferred Months:**", defer_months)
             st.write("**Recurring Extra Payment:**", format_currency(recurring_extra_payment))
         
         st.divider()
@@ -181,6 +183,7 @@ def mortgage(db: Database):
         loan_term_years=loan_term_years,
         payments_per_year=payments_per_year,
         start_date=loan_start_date,
+        defer_months=defer_months,
         recurring_extra_payment=recurring_extra_payment,
         custom_extra_payments=edited_custom_payments
     )
@@ -195,60 +198,5 @@ def mortgage(db: Database):
     metric_col_4.metric("Years saved off original loan term", f'{summary["years_saved"]:.3f}')
     metric_col_5.metric("Total early payments", format_currency(summary["total_early_payments"]))
     metric_col_6.metric("Total interest", format_currency(summary["total_interest"]))
-
-    st.divider()
-    st.write("### Amortization Schedule")
-
-    display_df = prepare_schedule_for_display(schedule_df)
-
-    csv_buffer = StringIO()
-    schedule_df_for_csv = schedule_df.copy()
-    if not schedule_df_for_csv.empty:
-        schedule_df_for_csv["PAYMENT DATE"] = pd.to_datetime(schedule_df_for_csv["PAYMENT DATE"]).dt.strftime("%Y-%m-%d")
-        numeric_columns = [
-            "BEGINNING BALANCE",
-            "SCHEDULED PAYMENT",
-            "EXTRA PAYMENT",
-            "TOTAL PAYMENT",
-            "PRINCIPAL",
-            "INTEREST",
-            "ENDING BALANCE",
-            "CUMULATIVE INTEREST"
-        ]
-        schedule_df_for_csv[numeric_columns] = schedule_df_for_csv[numeric_columns].round(2)
-
-    schedule_df_for_csv.to_csv(csv_buffer, index=False)
-
-    st.download_button(
-        label=f"Download {selected_mortgage_name}_Amortization_Schedule.csv",
-        data=csv_buffer.getvalue(),
-        file_name=f"{selected_mortgage_name.replace(' ', '_')}_Amortization_Schedule.csv",
-        mime="text/csv",
-        type="primary"
-    )
-
-    st.dataframe(display_df, width="stretch", hide_index=True)
-
-    if not schedule_df.empty:
-        with st.expander("Custom extra payment dates"):
-            custom_payment_rows = []
-            custom_lookup = edited_custom_payments.dropna(subset=["PMT NO", "EXTRA PAYMENT"]).copy()
-
-            for _, row in custom_lookup.iterrows():
-                payment_no = int(row["PMT NO"])
-                extra_payment_amount = float(row["EXTRA PAYMENT"])
-
-                if payment_no > 0 and payment_no <= len(schedule_df):
-                    payment_date = schedule_df.loc[schedule_df["PMT NO"] == payment_no, "PAYMENT DATE"].iloc[0]
-                    custom_payment_rows.append({
-                        "PMT NO": payment_no,
-                        "DATE": pd.to_datetime(payment_date).strftime("%Y-%m-%d"),
-                        "EXTRA PAYMENT": format_currency(extra_payment_amount)
-                    })
-
-            if custom_payment_rows:
-                st.dataframe(pd.DataFrame(custom_payment_rows), width="stretch", hide_index=True)
-            else:
-                st.caption("No valid one-off extra payments configured.")
 
 # Made with Bob

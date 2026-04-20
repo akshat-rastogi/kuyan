@@ -305,7 +305,7 @@ def render_exchange_rate_widget_inline():
                             converted_price = CurrencyConverter.convert_commodity_unit(
                                 base_price,
                                 "ounce",  # API returns prices per ounce
-                                selected_unit
+                                commodity_unit
                             )
                             
                             # Get currency details for emoji

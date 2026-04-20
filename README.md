@@ -367,7 +367,7 @@ The main dashboard has **three tabs**:
 - Year-over-year comparison (if 12+ months of data)
 - Base currency selector for viewing net worth in different currencies
 
-#### 💰 Accounts
+#### 💰 Update Accounts
 
 - Monthly snapshot form for recording balances (grouped by owner)
 - Historical balance reference (previous months)

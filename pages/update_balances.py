@@ -14,6 +14,8 @@ from helper import (
     get_default_currency,
     get_currency_symbol,
     get_converted_value,
+    get_commodity_value,
+    get_converted_account_value,
     calculate_total_net_worth
 )
 from components import render_calendar_widget
@@ -28,7 +30,7 @@ MONTH_NAMES = [
 
 
 def update_balances(db: Database):
-    st.title("💰 Accounts")
+    st.title("💰 Update Accounts")
     
     # Apply tab styling to match settings page
     st.markdown("""
@@ -48,7 +50,7 @@ def update_balances(db: Database):
     """, unsafe_allow_html=True)
     
     # Create tabs for Accounts, Mortgage, and Reminder
-    tab1, tab2, tab3 = st.tabs(["📊 Update Balances", "🏠 Mortgage", "🔔 Reminder"])
+    tab1, tab2, tab3 = st.tabs(["📊 Update Balances", "🏠 Update Mortgage", "🔔 Add Reminder"])
     
     with tab1:
         balances(db=db)
@@ -148,6 +150,31 @@ def balances(db: Database):
 
             # Calculate total net worth
             total = calculate_total_net_worth(existing_snapshots, base_currency, db)
+            
+            # Fetch commodity prices if there are commodity accounts
+            commodity_accounts = [s for s in existing_snapshots if s.get("account_type") == "Commodity"]
+            commodity_prices = {}
+            commodity_configs = {}
+            
+            if commodity_accounts and rates:
+                # Get snapshot date and unique commodities
+                snapshot_date_str = snapshot_date.isoformat()
+                commodity_list = [s.get("commodity") for s in commodity_accounts if s.get("commodity")]
+                unique_commodities = list(set([c for c in commodity_list if c is not None]))
+                
+                # Get enabled currencies from database
+                enabled_currencies = db.get_currency_codes()
+                
+                # Fetch commodity prices for the snapshot date (prices are per troy ounce)
+                if unique_commodities:
+                    commodity_prices = CurrencyConverter.get_commodity_prices(
+                        unique_commodities,
+                        enabled_currencies,
+                        date=snapshot_date_str
+                    ) or {}
+                    
+                    # Get commodity configurations to know the units
+                    commodity_configs = {c['name']: c for c in db.get_commodities()}
 
             # Create accordion with month name and total net worth in title
             expander_label = f"📋 Existing Snapshot for {month_names[selected_month - 1]} {selected_year} - Total Net Worth: `{currency_symbol}{total:,.2f}` ({base_currency})"
@@ -169,39 +196,59 @@ def balances(db: Database):
                         log_entries.append(f"  **{owner_name}:**")
 
                         for snapshot in owner_snapshots:
-                            converted_value = get_converted_value(
-                                snapshot["balance"],
-                                snapshot["currency"],
-                                base_currency,
-                                rates
-                            )
-
                             # Check if this is a commodity account
                             is_commodity = snapshot["account_type"] == "Commodity"
                             
                             if is_commodity:
-                                # For commodities, extract unit from account name
-                                account_name = snapshot["name"]
-                                unit = "units"
-                                if "(" in account_name and ")" in account_name:
-                                    unit = account_name[account_name.rfind("(")+1:account_name.rfind(")")]
+                                # For commodities, calculate value using the new commodity function
+                                commodity_name = snapshot.get("commodity")
+                                quantity = snapshot["balance"]
                                 
-                                # Show balance with unit instead of currency symbol
-                                commodity_name = snapshot.get("commodity", snapshot["currency"])
+                                # Get unit from snapshot (from database join) or extract from account name as fallback
+                                unit = snapshot.get("commodity_unit")
+                                if not unit:
+                                    # Fallback: extract unit from account name
+                                    account_name = snapshot["name"]
+                                    unit = "units"
+                                    if "(" in account_name and ")" in account_name:
+                                        unit = account_name[account_name.rfind("(")+1:account_name.rfind(")")]
+                                
+                                # Calculate commodity value in base currency using new function
+                                converted_value = get_commodity_value(
+                                    quantity,
+                                    commodity_name,
+                                    base_currency,
+                                    commodity_prices,
+                                    commodity_configs,
+                                    unit
+                                )
+                                
+                                # Show balance with unit
                                 entry = (
                                     f"    • {snapshot['name']} ({snapshot['account_type']}): "
                                     f"`{snapshot['balance']:,.2f} {unit}` {commodity_name}"
                                 )
+                                
+                                # Always show converted value for commodities
+                                entry += f" = `{currency_symbol}{converted_value:,.2f}` {base_currency}"
                             else:
-                                # For regular accounts, show currency symbol
+                                # For regular accounts, use currency conversion
+                                converted_value = get_converted_value(
+                                    snapshot["balance"],
+                                    snapshot["currency"],
+                                    base_currency,
+                                    rates
+                                )
+                                
+                                # Show currency symbol
                                 acc_symbol = get_currency_symbol(snapshot['currency'])
                                 entry = (
                                     f"    • {snapshot['name']} ({snapshot['account_type']}): "
                                     f"`{acc_symbol}{snapshot['balance']:,.2f}` {snapshot['currency']}"
                                 )
-                            
-                            if snapshot['currency'] != base_currency:
-                                entry += f" = `{currency_symbol}{converted_value:,.2f}` {base_currency}"
+                                
+                                if snapshot['currency'] != base_currency:
+                                    entry += f" = `{currency_symbol}{converted_value:,.2f}` {base_currency}"
 
                             log_entries.append(entry)
 

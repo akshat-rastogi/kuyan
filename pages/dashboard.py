@@ -15,6 +15,7 @@ from helper import (
     get_default_currency,
     get_currency_symbol,
     get_converted_value,
+    get_converted_account_value,
     calculate_total_net_worth,
     get_current_mortgage_balance,
     get_theme_colors,
@@ -194,41 +195,14 @@ def dashboard(db):
         for snapshot in latest_snapshots:
             is_commodity = snapshot["account_type"] == "Commodity"
             
-            if is_commodity:
-                # For commodity accounts: quantity * price per unit in target currency
-                commodity_name = snapshot.get("commodity")
-                quantity = snapshot["balance"]
-                
-                # Get commodity price in base currency (API returns price per troy ounce)
-                if commodity_name and commodity_name in commodity_prices:
-                    price_per_ounce = commodity_prices[commodity_name].get(base_currency, 0)
-                    
-                    # Get the unit for this commodity from database
-                    commodity_unit = "ounce"  # Default to ounce
-                    if commodity_name in commodity_configs:
-                        commodity_unit = commodity_configs[commodity_name].get('unit', 'ounce')
-                    
-                    # Convert price from per-ounce to per-unit
-                    price_per_unit = CurrencyConverter.convert_commodity_unit(
-                        price_per_ounce,
-                        "ounce",  # API always returns per troy ounce
-                        commodity_unit  # Convert to the commodity's configured unit
-                    )
-                    
-                    # Calculate total value: quantity * price per unit
-                    converted_value = quantity * price_per_unit
-                else:
-                    # Fallback: if no price available, use 0
-                    converted_value = 0.0
-                    
-            else:
-                # For regular accounts: use currency conversion
-                converted_value = get_converted_value(
-                    snapshot["balance"],
-                    snapshot["currency"],
-                    base_currency,
-                    rates
-                )
+            # Use the new unified function to get converted value
+            converted_value = get_converted_account_value(
+                snapshot,
+                base_currency,
+                rates,
+                commodity_prices,
+                commodity_configs
+            )
             
             total_converted += converted_value
 

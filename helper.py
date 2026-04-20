@@ -117,10 +117,113 @@ def get_theme_colors():
 
 
 def get_converted_value(amount, from_currency, to_currency, rates):
-    """Convert amount using exchange rates"""
+    """Convert amount using exchange rates for regular currency accounts
+    
+    Args:
+        amount: Amount to convert
+        from_currency: Source currency code
+        to_currency: Target currency code
+        rates: Dictionary of exchange rates
+        
+    Returns:
+        Converted amount in target currency
+    """
     if not rates:
         return amount
     return CurrencyConverter.convert(amount, from_currency, to_currency, rates)
+
+
+def get_commodity_value(quantity, commodity_name, target_currency, commodity_prices, commodity_configs, commodity_unit=None):
+    """Calculate commodity value in target currency
+    
+    This function handles the conversion of commodity quantities to currency values,
+    taking into account the unit of measurement for each commodity.
+    
+    Args:
+        quantity: Quantity of commodity held
+        commodity_name: Name of the commodity (e.g., "Gold", "Silver")
+        target_currency: Target currency code (e.g., "EUR", "USD")
+        commodity_prices: Dictionary of commodity prices per troy ounce
+                         Format: {"Gold": {"USD": 2000.50, "EUR": 1850.25}, ...}
+        commodity_configs: Dictionary of commodity configurations
+                          Format: {"Gold": {"unit": "gram", ...}, ...}
+        commodity_unit: Optional unit override from snapshot (takes precedence over commodity_configs)
+    
+    Returns:
+        float: Value of the commodity in target currency
+    """
+    if not commodity_name or commodity_name not in commodity_prices:
+        return 0.0
+    
+    # Get price per troy ounce in target currency
+    price_per_ounce = commodity_prices[commodity_name].get(target_currency, 0)
+    
+    if price_per_ounce == 0:
+        return 0.0
+    
+    # Get the unit for this commodity
+    # Priority: 1) commodity_unit parameter (from snapshot), 2) commodity_configs, 3) default "ounce"
+    if commodity_unit:
+        resolved_unit = commodity_unit
+    elif commodity_name in commodity_configs:
+        resolved_unit = commodity_configs[commodity_name].get('unit', 'ounce')
+    else:
+        resolved_unit = "ounce"
+    
+    # Convert price from per-ounce to per-unit
+    # IMPORTANT: API always returns price per troy ounce, so from_unit is always "ounce"
+    price_per_unit = CurrencyConverter.convert_commodity_unit(
+        price_per_ounce,
+        "ounce",  # API always returns per troy ounce (from_unit)
+        resolved_unit  # Convert to the commodity's configured unit (to_unit)
+    )
+    
+    total_value = quantity * price_per_unit
+    
+    # Calculate total value: quantity * price per unit
+    return total_value
+
+
+def get_converted_account_value(snapshot, target_currency, rates, commodity_prices=None, commodity_configs=None):
+    """Convert account value to target currency, handling both regular and commodity accounts
+    
+    Args:
+        snapshot: Account snapshot dictionary with balance, currency, account_type, etc.
+        target_currency: Target currency code
+        rates: Dictionary of exchange rates
+        commodity_prices: Optional dictionary of commodity prices (required for commodity accounts)
+        commodity_configs: Optional dictionary of commodity configurations (required for commodity accounts)
+    
+    Returns:
+        float: Converted value in target currency
+    """
+    is_commodity = snapshot.get("account_type") == "Commodity"
+    
+    if is_commodity:
+        # For commodity accounts, use commodity-specific calculation
+        commodity_name = snapshot.get("commodity")
+        quantity = snapshot["balance"]
+        
+        # Get unit from snapshot if available (from database join), otherwise from commodity_configs
+        commodity_unit = snapshot.get("commodity_unit")
+        if not commodity_unit and commodity_configs and commodity_name in commodity_configs:
+            commodity_unit = commodity_configs[commodity_name].get('unit', 'ounce')
+        elif not commodity_unit:
+            commodity_unit = "ounce"  # Default fallback
+        
+        if commodity_prices and commodity_configs:
+            return get_commodity_value(quantity, commodity_name, target_currency, commodity_prices, commodity_configs, commodity_unit)
+        else:
+            # Fallback if commodity data not provided
+            return 0.0
+    else:
+        # For regular accounts, use currency conversion
+        return get_converted_value(
+            snapshot["balance"],
+            snapshot["currency"],
+            target_currency,
+            rates
+        )
 
 def has_multiple_currencies(db) -> bool:
     """
@@ -355,46 +458,14 @@ def calculate_total_net_worth(snapshots, base_currency, db):
             commodity_configs = {c['name']: c for c in db.get_commodities()}
 
     for snapshot in snapshots:
-        is_commodity = snapshot.get("account_type") == "Commodity"
-        
-        if is_commodity:
-            # For commodity accounts: quantity * price per unit in target currency
-            commodity_name = snapshot.get("commodity")
-            quantity = snapshot["balance"]
-            
-            # Get commodity price in base currency (API returns price per troy ounce)
-            if commodity_name and commodity_name in commodity_prices:
-                price_per_ounce = commodity_prices[commodity_name].get(base_currency, 0)
-                
-                # Get the unit for this commodity from database
-                commodity_unit = "ounce"  # Default to ounce
-                if commodity_name in commodity_configs:
-                    commodity_unit = commodity_configs[commodity_name].get('unit', 'ounce')
-                
-                # Convert price from per-ounce to per-unit
-                price_per_unit = CurrencyConverter.convert_commodity_unit(
-                    price_per_ounce,
-                    "ounce",  # API always returns per troy ounce
-                    commodity_unit  # Convert to the commodity's configured unit
-                )
-                
-                # Calculate total value: quantity * price per unit
-                converted = quantity * price_per_unit
-            else:
-                # Fallback: if no price available, use 0
-                converted = 0.0
-        else:
-            # For regular accounts: use currency conversion
-            if rates:
-                converted = get_converted_value(
-                    snapshot["balance"],
-                    snapshot["currency"],
-                    base_currency,
-                    rates
-                )
-            else:
-                converted = snapshot["balance"]
-        
+        # Use the new unified function to get converted value
+        converted = get_converted_account_value(
+            snapshot,
+            base_currency,
+            rates,
+            commodity_prices,
+            commodity_configs
+        )
         total += converted
 
     return total
@@ -417,6 +488,7 @@ def get_current_mortgage_balance(db):
     loan_term_years = float(db_settings["loan_term_years"])
     payments_per_year = int(db_settings["payments_per_year"])
     start_date = date.fromisoformat(db_settings["start_date"])
+    defer_months = int(db_settings.get("defer_months", 0))
     recurring_extra_payment = float(db_settings["recurring_extra_payment"])
     currency = db_settings.get("currency", "EUR")
     
@@ -438,6 +510,7 @@ def get_current_mortgage_balance(db):
         loan_term_years=loan_term_years,
         payments_per_year=payments_per_year,
         start_date=start_date,
+        defer_months=defer_months,
         recurring_extra_payment=recurring_extra_payment,
         custom_extra_payments=custom_payments
     )
@@ -491,8 +564,9 @@ def generate_amortization_schedule(
     loan_term_years,
     payments_per_year,
     start_date,
-    recurring_extra_payment,
-    custom_extra_payments
+    defer_months=0,
+    recurring_extra_payment=0.0,
+    custom_extra_payments=None
 ):
     """
     Build a mortgage amortization schedule period-by-period until the loan is paid off.
@@ -502,7 +576,8 @@ def generate_amortization_schedule(
         annual_interest_rate: Annual nominal rate as a percentage
         loan_term_years: Loan term in years (can be fractional)
         payments_per_year: Number of scheduled payments per year
-        start_date: Repayment start date
+        start_date: Loan start date (not payment start date)
+        defer_months: Number of months to defer payments (interest accrues during deferral)
         recurring_extra_payment: Fixed extra payment applied every period
         custom_extra_payments: DataFrame with columns ['PMT NO', 'EXTRA PAYMENT']
 
@@ -510,13 +585,24 @@ def generate_amortization_schedule(
         tuple[pd.DataFrame, dict]: Full schedule dataframe and summary metrics
     """
     total_scheduled_payments = loan_term_years * payments_per_year
+    rate_per_period = (annual_interest_rate / 100) / payments_per_year
+    months_per_payment = max(int(round(12 / payments_per_year)), 1)
+    
+    # Calculate the principal after deferral period (with accrued interest)
+    # During deferral, interest compounds but no payments are made
+    deferred_principal = loan_amount
+    if defer_months > 0:
+        # Calculate number of compounding periods during deferral
+        deferral_periods = defer_months / months_per_payment
+        deferred_principal = loan_amount * ((1 + rate_per_period) ** deferral_periods)
+    
+    # Calculate scheduled payment based on the deferred principal
     scheduled_payment = calculate_scheduled_payment(
-        principal=loan_amount,
+        principal=deferred_principal,
         annual_interest_rate=annual_interest_rate,
         total_payments=total_scheduled_payments,
         payments_per_year=payments_per_year
     )
-    rate_per_period = (annual_interest_rate / 100) / payments_per_year
 
     # Build a lookup of one-off extra payments keyed by payment number.
     custom_payment_lookup = {}
@@ -536,11 +622,9 @@ def generate_amortization_schedule(
     payment_number = 1
 
     # Iterate until the mortgage is fully repaid.
-    # The original sheet appears to be monthly, so payment dates advance month-by-month.
-    months_per_payment = max(int(round(12 / payments_per_year)), 1)
-
     while beginning_balance > 1e-8:
-        payment_date = start_date + relativedelta(months=(payment_number - 1) * months_per_payment)
+        # Calculate payment date: start_date + defer_months + payment periods
+        payment_date = start_date + relativedelta(months=defer_months + (payment_number - 1) * months_per_payment)
         interest = beginning_balance * rate_per_period
         one_off_extra_payment = custom_payment_lookup.get(payment_number, 0.0)
         extra_payment = float(recurring_extra_payment) + one_off_extra_payment

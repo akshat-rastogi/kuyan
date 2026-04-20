@@ -7,12 +7,17 @@ Licensed under MIT License - see LICENSE file for details
 import streamlit as st
 from datetime import datetime, date
 import json
+import pandas as pd
+from io import StringIO
 from components import render_data_table
 from helper import (
     get_currency_symbol,
     get_default_currency,
     get_converted_value,
-    calculate_total_net_worth
+    calculate_total_net_worth,
+    generate_amortization_schedule,
+    prepare_schedule_for_display,
+    format_currency
 )
 
 
@@ -23,9 +28,153 @@ MONTH_NAMES = [
 ]
 
 
-def history(db):
+def render_mortgage_amortization_tab(db):
     """
-    Render the history page showing account balance history and snapshot logs.
+    Render the mortgage amortization schedule tab.
+    
+    Args:
+        db: Database instance
+    """
+    st.markdown("### 🏠 Mortgage Amortization Schedule")
+    st.caption("Interactive mortgage amortization calculator with recurring and one-off extra payments.")
+    
+    # Get all mortgages from database
+    all_mortgages = db.get_all_mortgages()
+    
+    # Check if any mortgages exist
+    if not all_mortgages:
+        st.warning("⚠️ No mortgages configured. Please configure your mortgage details in Settings → Mortgage tab.")
+        st.info("👉 Go to **Settings** page and select the **🏠 Mortgage** tab to add your mortgage details.")
+        return
+    
+    # Create dropdown for mortgage selection
+    mortgage_names = [m['mortgage_name'] for m in all_mortgages]
+    
+    # Initialize selected mortgage in session state
+    if "selected_mortgage_name" not in st.session_state:
+        st.session_state.selected_mortgage_name = mortgage_names[0]
+    
+    # Mortgage selector
+    selected_mortgage_name = st.selectbox(
+        "Select Mortgage",
+        options=mortgage_names,
+        index=mortgage_names.index(st.session_state.selected_mortgage_name) if st.session_state.selected_mortgage_name in mortgage_names else 0,
+        key="mortgage_selector_history",
+        help="Select which mortgage to view the amortization schedule for"
+    )
+    
+    # Update session state
+    st.session_state.selected_mortgage_name = selected_mortgage_name
+    
+    # Ensure selected_mortgage_name is not None
+    if not selected_mortgage_name:
+        st.error("❌ No mortgage selected. Please select a mortgage from the dropdown.")
+        return
+    
+    # Get the selected mortgage details
+    selected_mortgage = db.get_mortgage_by_name(selected_mortgage_name)
+    
+    if not selected_mortgage:
+        st.error("❌ Selected mortgage not found. Please refresh the page.")
+        return
+    
+    mortgage_id = selected_mortgage['id']
+    
+    # Initialize editable one-off payment defaults for this mortgage
+    session_key = f"mortgage_custom_payments_{mortgage_id}"
+    if session_key not in st.session_state:
+        # Try to load from database first
+        db_payments = db.get_mortgage_extra_payments(mortgage_id)
+        if db_payments:
+            payments_data = [
+                {"PMT NO": int(p["payment_number"]), "EXTRA PAYMENT": float(p["extra_payment_amount"])}
+                for p in db_payments
+            ]
+            st.session_state[session_key] = pd.DataFrame(payments_data)
+        else:
+            st.session_state[session_key] = pd.DataFrame(
+                {"PMT NO": [], "EXTRA PAYMENT": []}
+            )
+    
+    # Get values from selected mortgage
+    loan_amount = float(selected_mortgage["loan_amount"])
+    interest_rate = float(selected_mortgage["interest_rate"])
+    loan_term_years = float(selected_mortgage["loan_term_years"])
+    payments_per_year = int(selected_mortgage["payments_per_year"])
+    loan_start_date = date.fromisoformat(selected_mortgage["start_date"]) if isinstance(selected_mortgage["start_date"], str) else selected_mortgage["start_date"]
+    defer_months = int(selected_mortgage.get("defer_months", 0))
+    recurring_extra_payment = float(selected_mortgage["recurring_extra_payment"])
+    currency = selected_mortgage.get("currency", "EUR")
+    
+    schedule_df, summary = generate_amortization_schedule(
+        loan_amount=loan_amount,
+        annual_interest_rate=interest_rate,
+        loan_term_years=loan_term_years,
+        payments_per_year=payments_per_year,
+        start_date=loan_start_date,
+        defer_months=defer_months,
+        recurring_extra_payment=recurring_extra_payment,
+        custom_extra_payments=st.session_state[session_key]
+    )
+
+    st.write("### Amortization Schedule")
+
+    display_df = prepare_schedule_for_display(schedule_df)
+
+    csv_buffer = StringIO()
+    schedule_df_for_csv = schedule_df.copy()
+    if not schedule_df_for_csv.empty:
+        schedule_df_for_csv["PAYMENT DATE"] = pd.to_datetime(schedule_df_for_csv["PAYMENT DATE"]).dt.strftime("%Y-%m-%d")
+        numeric_columns = [
+            "BEGINNING BALANCE",
+            "SCHEDULED PAYMENT",
+            "EXTRA PAYMENT",
+            "TOTAL PAYMENT",
+            "PRINCIPAL",
+            "INTEREST",
+            "ENDING BALANCE",
+            "CUMULATIVE INTEREST"
+        ]
+        schedule_df_for_csv[numeric_columns] = schedule_df_for_csv[numeric_columns].round(2)
+
+    schedule_df_for_csv.to_csv(csv_buffer, index=False)
+
+    st.download_button(
+        label=f"Download {selected_mortgage_name}_Amortization_Schedule.csv",
+        data=csv_buffer.getvalue(),
+        file_name=f"{selected_mortgage_name.replace(' ', '_')}_Amortization_Schedule.csv",
+        mime="text/csv",
+        type="primary"
+    )
+
+    st.dataframe(display_df, width="stretch", hide_index=True)
+
+    if not schedule_df.empty:
+        with st.expander("Custom extra payment dates"):
+            custom_payment_rows = []
+            custom_lookup = st.session_state[session_key].dropna(subset=["PMT NO", "EXTRA PAYMENT"]).copy()
+
+            for _, row in custom_lookup.iterrows():
+                payment_no = int(row["PMT NO"])
+                extra_payment_amount = float(row["EXTRA PAYMENT"])
+
+                if payment_no > 0 and payment_no <= len(schedule_df):
+                    payment_date = schedule_df.loc[schedule_df["PMT NO"] == payment_no, "PAYMENT DATE"].iloc[0]
+                    custom_payment_rows.append({
+                        "PMT NO": payment_no,
+                        "DATE": pd.to_datetime(payment_date).strftime("%Y-%m-%d"),
+                        "EXTRA PAYMENT": format_currency(extra_payment_amount)
+                    })
+
+            if custom_payment_rows:
+                st.dataframe(pd.DataFrame(custom_payment_rows), width="stretch", hide_index=True)
+            else:
+                st.caption("No valid one-off extra payments configured.")
+
+
+def render_balance_history_tab(db):
+    """
+    Render the account balance history tab (most recent 3 months).
     
     Args:
         db: Database instance
@@ -101,7 +250,19 @@ def history(db):
         if table_data:
             render_data_table(table_data)
 
-    st.divider()
+
+def render_yearly_snapshots_tab(db):
+    """
+    Render the yearly snapshots tab (view all snapshot entries by year).
+    
+    Args:
+        db: Database instance
+    """
+    snapshot_dates = db.get_all_snapshot_dates()
+
+    if not snapshot_dates:
+        st.info("No snapshots yet. Create your first monthly snapshot!")
+        return
 
     st.subheader("View all snapshot entries by year")
 
@@ -192,11 +353,14 @@ def history(db):
                                 is_commodity = snapshot["account_type"] == "Commodity"
                                 
                                 if is_commodity:
-                                    # For commodities, extract unit from account name
-                                    account_name = snapshot["name"]
-                                    unit = "units"
-                                    if "(" in account_name and ")" in account_name:
-                                        unit = account_name[account_name.rfind("(")+1:account_name.rfind(")")]
+                                    # Get unit from snapshot (from database join) or extract from account name as fallback
+                                    unit = snapshot.get("commodity_unit")
+                                    if not unit:
+                                        # Fallback: extract unit from account name
+                                        account_name = snapshot["name"]
+                                        unit = "units"
+                                        if "(" in account_name and ")" in account_name:
+                                            unit = account_name[account_name.rfind("(")+1:account_name.rfind(")")]
                                     
                                     # Show balance with unit instead of currency symbol
                                     commodity_name = snapshot.get("commodity", snapshot["currency"])
@@ -238,3 +402,40 @@ def history(db):
             with st.expander(f"⚪ {month_names[month_num - 1]} {selected_year}", expanded=False):
                 st.markdown("  *No snapshot recorded*")
 
+
+
+def history(db):
+    """
+    Render the history page with tabs for balance history, yearly snapshots, and mortgage amortization.
+    
+    Args:
+        db: Database instance
+    """
+    # Custom CSS to make tabs larger (consistent with settings page)
+    st.markdown("""
+        <style>
+        div[data-baseweb="tab-list"] {
+            gap: 8px !important;
+        }
+        div[data-baseweb="tab-list"] button {
+            height: 50px !important;
+            padding: 12px 20px !important;
+        }
+        div[data-baseweb="tab-list"] button[role="tab"] * {
+            font-size: 24px !important;
+            font-weight: 600 !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    # Create tabs
+    tab1, tab2, tab3 = st.tabs(["📊 Recent History", "📅 Yearly View", "🏠 Mortgage"])
+    
+    with tab1:
+        render_balance_history_tab(db)
+    
+    with tab2:
+        render_yearly_snapshots_tab(db)
+    
+    with tab3:
+        render_mortgage_amortization_tab(db)

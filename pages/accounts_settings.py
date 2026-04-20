@@ -120,12 +120,15 @@ def accounts_settings(db: Database, key_prefix=""):
                                 key=f"{key_prefix}commodity_{account['id']}"
                             )
                             
-                            # Extract unit from account name (format: "Gold (ounce)")
-                            current_unit = "ounce"  # default
-                            if '(' in account['name'] and ')' in account['name']:
-                                unit_part = account['name'].split('(')[1].split(')')[0]
-                                if unit_part in UNIT_OPTIONS:
-                                    current_unit = unit_part
+                            # Get unit from account data or extract from name as fallback
+                            current_unit = account.get('unit')
+                            if not current_unit:
+                                # Fallback: extract from account name (format: "Gold (ounce)")
+                                current_unit = "ounce"  # default
+                                if '(' in account['name'] and ')' in account['name']:
+                                    unit_part = account['name'].split('(')[1].split(')')[0]
+                                    if unit_part in UNIT_OPTIONS:
+                                        current_unit = unit_part
                             
                             unit_index = UNIT_OPTIONS.index(current_unit) if current_unit in UNIT_OPTIONS else 1
                             new_unit = st.selectbox(
@@ -151,12 +154,12 @@ def accounts_settings(db: Database, key_prefix=""):
                         if new_type == "Commodity":
                             # Auto-generate name for commodity accounts with unit
                             auto_name = f"{new_commodity} ({new_unit})"
-                            db.update_account(account['id'], auto_name, new_owner, new_type, "", new_commodity)
+                            db.update_account(account['id'], auto_name, new_owner, new_type, "", new_commodity, new_unit)
                             st.success(f"Account updated!")
                             st.rerun()
                         else:
                             if new_name:
-                                db.update_account(account['id'], new_name, new_owner, new_type, new_currency, None)
+                                db.update_account(account['id'], new_name, new_owner, new_type, new_currency, None, None)
                                 st.success(f"Account updated!")
                                 st.rerun()
                             else:
@@ -217,8 +220,8 @@ def accounts_settings(db: Database, key_prefix=""):
         # Add button
         if st.button("➕ Add Account", width="stretch", type="primary", key=f"{key_prefix}add_account_btn"):
             if account_type == "Commodity":
-                if selected_commodity and auto_account_name:
-                    db.add_account(auto_account_name, owner, account_type, "", selected_commodity)
+                if selected_commodity and auto_account_name and selected_unit:
+                    db.add_account(auto_account_name, owner, account_type, "", selected_commodity, selected_unit)
                     st.session_state.account_added = True
                     st.session_state.added_account_name = auto_account_name
                     st.rerun()
@@ -226,7 +229,7 @@ def accounts_settings(db: Database, key_prefix=""):
                     st.error("Please select a commodity")
             else:
                 if account_name:
-                    db.add_account(account_name, owner, account_type, currency)
+                    db.add_account(account_name, owner, account_type, currency, None, None)
                     st.session_state.account_added = True
                     st.session_state.added_account_name = account_name
                     st.rerun()

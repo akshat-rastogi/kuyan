@@ -307,9 +307,13 @@ class CurrencyConverter:
         
         Returns:
             Converted price in the target unit
+        
+        Example:
+            If gold is $2000 per troy ounce and 1 troy ounce = 31.1035 grams,
+            then price per gram = $2000 / 31.1035 = $64.30 per gram
         """
-        # Conversion factors relative to troy ounce
-        unit_conversions = {
+        # Conversion factors: how many of each unit equals 1 troy ounce
+        units_per_ounce = {
             "ounce": 1.0,           # Troy ounce (base unit)
             "gram": 31.1035,        # 1 troy ounce = 31.1035 grams
             "kilogram": 0.0311035,  # 1 troy ounce = 0.0311035 kg
@@ -317,12 +321,18 @@ class CurrencyConverter:
             "ton": 0.0000311035,    # 1 troy ounce = 0.0000311035 metric tons
         }
         
-        if from_unit not in unit_conversions or to_unit not in unit_conversions:
+        if from_unit not in units_per_ounce or to_unit not in units_per_ounce:
             return price_per_ounce
         
-        # Convert from source unit to ounce, then to target unit
-        # Price per ounce / units_per_ounce = price per unit
-        price_per_target_unit = price_per_ounce / unit_conversions[to_unit]
+        # If converting from ounce to another unit:
+        # Price per target unit = Price per ounce / (number of target units per ounce)
+        # Example: $2000 per ounce / 31.1035 grams per ounce = $64.30 per gram
+        if from_unit == "ounce":
+            price_per_target_unit = price_per_ounce / units_per_ounce[to_unit]
+        else:
+            # If converting from another unit to ounce (reverse conversion):
+            # Price per ounce = Price per unit * (number of units per ounce)
+            price_per_target_unit = price_per_ounce * units_per_ounce[from_unit] / units_per_ounce[to_unit]
         
         return price_per_target_unit
     
