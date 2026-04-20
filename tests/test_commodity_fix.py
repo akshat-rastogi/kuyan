@@ -4,7 +4,7 @@ Test script to verify the commodity pricing fix
 Tests the exact API example provided: XAU to EUR on 2026-04-08
 """
 
-from currency import CurrencyConverter
+from currencyConverter import CurrencyConverter
 
 def test_gold_price_fix():
     """Test the fixed commodity pricing with the provided API example"""

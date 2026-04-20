@@ -4,7 +4,7 @@ Test script to verify that when API returns multiple dates, we select the first 
 """
 
 import requests
-from currency import CurrencyConverter
+from currencyConverter import CurrencyConverter
 
 def test_multiple_dates_handling():
     """Test that we correctly handle multiple dates in API response"""

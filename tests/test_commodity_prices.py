@@ -2,7 +2,7 @@
 Test script to verify commodity price fetching works correctly
 """
 
-from currency import CurrencyConverter
+from currencyConverter import CurrencyConverter
 
 def test_commodity_prices():
     """Test fetching commodity prices"""

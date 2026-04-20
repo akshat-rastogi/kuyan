@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test script for commodity unit conversion"""
 
-from currency import CurrencyConverter
+from currencyConverter import CurrencyConverter
 
 # Test unit conversion
 print("Testing Commodity Unit Conversion")

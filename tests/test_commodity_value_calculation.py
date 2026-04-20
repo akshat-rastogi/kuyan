@@ -2,7 +2,7 @@
 Test script to verify commodity value calculation on overview page
 """
 
-from currency import CurrencyConverter
+from currencyConverter import CurrencyConverter
 from database import Database
 from datetime import date
 

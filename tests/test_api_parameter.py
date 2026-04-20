@@ -4,7 +4,7 @@ Test script to verify the API parameter format (date with provider)
 """
 
 import requests
-from currency import CurrencyConverter
+from currencyConverter import CurrencyConverter
 
 def test_api_parameter():
     """Test that we're using the requested commodity API parameters"""

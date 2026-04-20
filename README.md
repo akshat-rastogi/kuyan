@@ -249,7 +249,7 @@ Sandbox mode includes:
 1. **Configure Currencies**: Go to "Currencies" to add/remove currencies and customize chart colors
 2. **Add Owners**: Navigate to "Owners" to add family members, companies, trusts, or other account holders
 3. **Add Accounts**: Go to "Accounts" to add your bank and investment accounts
-4. **Update Balances**: Click "Dashboard" then use the snapshot form to record monthly balances
+4. **Accounts**: Click "Dashboard" then use the snapshot form to record monthly balances
 5. **View Dashboard**: Check net worth, charts, and trends
 6. **Use Tools**: Access Calculator, Exchange Rates, Calendar Invite, and Export features from the sidebar
 7. **Review History**: View and manage past snapshots organized by month and year
@@ -367,7 +367,7 @@ The main dashboard has **three tabs**:
 - Year-over-year comparison (if 12+ months of data)
 - Base currency selector for viewing net worth in different currencies
 
-#### 💰 Update Balances
+#### 💰 Accounts
 
 - Monthly snapshot form for recording balances (grouped by owner)
 - Historical balance reference (previous months)
