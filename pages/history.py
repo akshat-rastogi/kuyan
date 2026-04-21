@@ -97,6 +97,7 @@ def render_mortgage_amortization_tab(db):
             )
     
     # Get values from selected mortgage
+    lender_name = selected_mortgage["lender_name"]
     loan_amount = float(selected_mortgage["loan_amount"])
     interest_rate = float(selected_mortgage["interest_rate"])
     loan_term_years = float(selected_mortgage["loan_term_years"])
@@ -116,6 +117,47 @@ def render_mortgage_amortization_tab(db):
         recurring_extra_payment=recurring_extra_payment,
         custom_extra_payments=st.session_state[session_key]
     )
+
+    with st.expander("📋 View Mortgage Configuration", expanded=False):
+        config_col1, config_col2, config_col3 = st.columns(3)
+        
+        with config_col1:
+            st.write("**Loan Amount:**", format_currency(loan_amount))
+            st.write("**Interest Rate:**", f"{interest_rate:.4f}%")
+            st.write("**Loan Term:**", f"{loan_term_years:.3f} years")
+
+        with config_col2:
+            st.write("**Currency:**", currency)
+            st.write("**Payments Per Year:**", payments_per_year)
+            st.write("**Start Date:**", loan_start_date.strftime("%d/%m/%Y"))
+        
+        with config_col3:
+            st.write("**Deferred Months:**", defer_months)
+            st.write("**Recurring Extra Payment:**", format_currency(recurring_extra_payment))
+        
+        st.divider()
+        
+        # Property value information
+        purchase_val = float(selected_mortgage.get("purchase_value", 0.0))
+        present_val = float(selected_mortgage.get("present_value", 0.0))
+        down_payment = purchase_val - loan_amount
+        
+        prop_col1, prop_col2, prop_col3 = st.columns(3)
+
+        prop_col1.metric("Purchase Value", format_currency(purchase_val))
+        prop_col2.metric("Down Payment", format_currency(down_payment))        
+        prop_col3.metric("Present Market Value", format_currency(present_val))
+
+        metric_col_1, metric_col_2, metric_col_3 = st.columns(3)
+        metric_col_4, metric_col_5, metric_col_6 = st.columns(3)
+
+        metric_col_1.metric("Scheduled payment", format_currency(summary["scheduled_payment"]))
+        metric_col_2.metric("Scheduled number of payments", f'{summary["scheduled_number_of_payments"]:.2f}')
+        metric_col_3.metric("Actual number of payments", f'{summary["actual_number_of_payments"]}')
+
+        metric_col_4.metric("Years saved off original loan term", f'{summary["years_saved"]:.3f}')
+        metric_col_5.metric("Total early payments", format_currency(summary["total_early_payments"]))
+        metric_col_6.metric("Total interest", format_currency(summary["total_interest"]))
 
     st.write("### Amortization Schedule")
 

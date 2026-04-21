@@ -86,7 +86,6 @@ def mortgage(db: Database):
             )
     
     # Get values from selected mortgage
-    lender_name = selected_mortgage["lender_name"]
     loan_amount = float(selected_mortgage["loan_amount"])
     interest_rate = float(selected_mortgage["interest_rate"])
     loan_term_years = float(selected_mortgage["loan_term_years"])
@@ -97,43 +96,7 @@ def mortgage(db: Database):
     currency = selected_mortgage.get("currency", "EUR")
     
     st.info("💡 To modify mortgage details, go to **Settings → Mortgage** tab.")
-    
-    # Display current mortgage configuration
-    st.markdown(f"### Loan Summary — {selected_mortgage_name} ({lender_name})")
-    
-    with st.expander("📋 View Mortgage Configuration", expanded=False):
-        config_col1, config_col2 = st.columns(2)
-        
-        with config_col1:
-            st.write("**Loan Amount:**", format_currency(loan_amount))
-            st.write("**Interest Rate:**", f"{interest_rate:.4f}%")
-            st.write("**Loan Term:**", f"{loan_term_years:.3f} years")
-            st.write("**Currency:**", currency)
-        
-        with config_col2:
-            st.write("**Payments Per Year:**", payments_per_year)
-            st.write("**Start Date:**", loan_start_date.strftime("%d/%m/%Y"))
-            st.write("**Deferred Months:**", defer_months)
-            st.write("**Recurring Extra Payment:**", format_currency(recurring_extra_payment))
-        
-        st.divider()
-        
-        # Property value information
-        purchase_val = float(selected_mortgage.get("purchase_value", 0.0))
-        present_val = float(selected_mortgage.get("present_value", 0.0))
-        down_payment = purchase_val - loan_amount
-        equity = present_val - loan_amount
-        
-        prop_col1, prop_col2 = st.columns(2)
-        
-        with prop_col1:
-            st.write("**Purchase Value:**", format_currency(purchase_val))
-            st.write("**Down Payment:**", format_currency(down_payment))
-        
-        with prop_col2:
-            st.write("**Present Market Value:**", format_currency(present_val))
-            st.write("**Current Equity:**", format_currency(equity))
-    
+
     st.write("#### One-Off / Custom Extra Payments")
 
     edited_custom_payments = st.data_editor(

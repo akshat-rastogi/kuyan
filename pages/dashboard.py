@@ -46,6 +46,7 @@ def dashboard(db):
     enabled_currencies = db.get_currencies()
 
     # Calculate current net worth in all enabled currencies
+    # Note: excluded_types will be set later in the UI, so we'll recalculate after the filter is shown
     net_worths = {}
     for currency in enabled_currencies:
         net_worths[currency['code']] = calculate_total_net_worth(latest_snapshots, currency['code'], db)
@@ -100,9 +101,38 @@ def dashboard(db):
                 st.write("")
         
         st.divider()
-
-    # Display current net worth in all currencies with flags
-    st.subheader("Current Net Worth")
+    
+    # Add filter for account types to exclude
+    # Get all unique account types from latest snapshots
+    all_account_types = sorted(list(set([s["account_type"] for s in latest_snapshots])))
+    
+    # Create a multiselect for excluding account types
+    # Default to excluding "Pension" if it exists in the account types
+    default_excluded = ["Pension"] if "Pension" in all_account_types else []
+    
+    col_filter1, col_filter2 = st.columns([2, 2])
+    with col_filter1:
+        # Display current net worth in all currencies with flags
+        st.subheader("Current Net Worth")
+        st.caption("Total value across all accounts and currencies")
+    with col_filter2:
+        excluded_types = st.multiselect(
+            "Exclude Account Types from Net Worth:",
+            options=all_account_types,
+            default=default_excluded,
+            key="excluded_account_types",
+            help="Select account types to exclude from net worth calculations"
+        )
+    
+    # Recalculate net worths with excluded account types
+    net_worths = {}
+    for currency in enabled_currencies:
+        net_worths[currency['code']] = calculate_total_net_worth(
+            latest_snapshots,
+            currency['code'],
+            db,
+            excluded_account_types=excluded_types
+        )
 
     # Get theme colors for metric cards
     colors = get_theme_colors()
@@ -151,9 +181,9 @@ def dashboard(db):
     st.divider()
 
     # Account breakdown table
-    col_header, col_currency = st.columns([3, 1])
+    col_header, col_currency = st.columns([2, 2])
     with col_header:
-        st.subheader("Account Breakdown")
+        st.subheader("Account Breakdown 4")
         st.caption("Currency conversions use exchange rates from the 1st of the snapshot month")
     with col_currency:
         base_currency = render_currency_selector(
@@ -165,102 +195,109 @@ def dashboard(db):
         st.session_state.base_currency = base_currency
 
     if latest_snapshots:
-        rates = json.loads(latest_snapshots[0]["exchange_rates"]) if latest_snapshots[0].get("exchange_rates") else {}
+        # Filter snapshots based on excluded account types
+        filtered_snapshots = [s for s in latest_snapshots if s.get("account_type") not in excluded_types]
         
-        # Fetch commodity prices for the snapshot date
-        snapshot_date_str = latest_snapshots[0]["snapshot_date"]
-        commodity_accounts = [s for s in latest_snapshots if s["account_type"] == "Commodity"]
-        commodity_prices = {}
-        commodity_configs = {}
-        
-        if commodity_accounts:
-            # Get unique commodities and enabled currencies
-            commodity_list = [s.get("commodity") for s in commodity_accounts if s.get("commodity")]
-            unique_commodities = list(set([c for c in commodity_list if c is not None]))  # Remove duplicates and None
-            enabled_currencies = db.get_currency_codes()
+        if not filtered_snapshots:
+            st.info("All accounts are excluded. Adjust the filter to see account breakdown.")
+        else:
+            rates = json.loads(filtered_snapshots[0]["exchange_rates"]) if filtered_snapshots[0].get("exchange_rates") else {}
             
-            # Fetch commodity prices for the snapshot date (prices are per troy ounce)
-            commodity_prices = CurrencyConverter.get_commodity_prices(
-                unique_commodities,
-                enabled_currencies,
-                date=snapshot_date_str
-            ) or {}
+            # Fetch commodity prices for the snapshot date
+            snapshot_date_str = filtered_snapshots[0]["snapshot_date"]
+            commodity_accounts = [s for s in filtered_snapshots if s["account_type"] == "Commodity"]
+            commodity_prices = {}
+            commodity_configs = {}
             
-            # Get commodity configurations to know the units
-            commodity_configs = {c['name']: c for c in db.get_commodities()}
+            if commodity_accounts:
+                # Get unique commodities and enabled currencies
+                commodity_list = [s.get("commodity") for s in commodity_accounts if s.get("commodity")]
+                unique_commodities = list(set([c for c in commodity_list if c is not None]))  # Remove duplicates and None
+                enabled_currencies = db.get_currency_codes()
+                
+                # Fetch commodity prices for the snapshot date (prices are per troy ounce)
+                commodity_prices = CurrencyConverter.get_commodity_prices(
+                    unique_commodities,
+                    enabled_currencies,
+                    date=snapshot_date_str
+                ) or {}
+                
+                # Get commodity configurations to know the units
+                commodity_configs = {c['name']: c for c in db.get_commodities()}
 
-        breakdown_data = []
-        total_converted = 0.0
+            breakdown_data = []
+            total_converted = 0.0
 
-        for snapshot in latest_snapshots:
-            is_commodity = snapshot["account_type"] == "Commodity"
-            
-            # Use the new unified function to get converted value
-            converted_value = get_converted_account_value(
-                snapshot,
-                base_currency,
-                rates,
-                commodity_prices,
-                commodity_configs
-            )
-            
-            total_converted += converted_value
+            for snapshot in filtered_snapshots:
+                is_commodity = snapshot["account_type"] == "Commodity"
+                
+                # Use the new unified function to get converted value
+                converted_value = get_converted_account_value(
+                    snapshot,
+                    base_currency,
+                    rates,
+                    commodity_prices,
+                    commodity_configs
+                )
+                
+                total_converted += converted_value
 
-            # For commodity accounts, show commodity name instead of currency
-            native_currency_display = snapshot.get("commodity", snapshot["currency"]) if is_commodity else snapshot["currency"]
-            
-            # For commodity accounts, show balance without currency symbol (just the amount with unit)
-            if is_commodity:
-                # Extract unit from account name (e.g., "Gold (ounce)" -> "ounce")
-                account_name = snapshot["name"]
-                unit = "units"
-                if "(" in account_name and ")" in account_name:
-                    unit = account_name[account_name.rfind("(")+1:account_name.rfind(")")]
-                native_balance_display = f"{snapshot['balance']:,.2f} {unit}"
-            else:
-                native_balance_display = f"{get_currency_symbol(snapshot['currency'])}{snapshot['balance']:,.2f}"
-            
-            breakdown_data.append({
-                "Account": snapshot["name"],
-                "Owner": snapshot["owner"],
-                "Type": snapshot["account_type"],
-                "Native Currency": native_currency_display,
-                "Native Balance": native_balance_display,
-                f"{base_currency} Value": f"{get_currency_symbol(base_currency)}{converted_value:,.2f}"
-            })
+                # For commodity accounts, show commodity name instead of currency
+                native_currency_display = snapshot.get("commodity", snapshot["currency"]) if is_commodity else snapshot["currency"]
+                
+                # For commodity accounts, show balance without currency symbol (just the amount with unit)
+                if is_commodity:
+                    # Extract unit from account name (e.g., "Gold (ounce)" -> "ounce")
+                    account_name = snapshot["name"]
+                    unit = "units"
+                    if "(" in account_name and ")" in account_name:
+                        unit = account_name[account_name.rfind("(")+1:account_name.rfind(")")]
+                    native_balance_display = f"{snapshot['balance']:,.2f} {unit}"
+                else:
+                    native_balance_display = f"{get_currency_symbol(snapshot['currency'])}{snapshot['balance']:,.2f}"
+                
+                breakdown_data.append({
+                    "Account": snapshot["name"],
+                    "Owner": snapshot["owner"],
+                    "Type": snapshot["account_type"],
+                    "Native Currency": native_currency_display,
+                    "Native Balance": native_balance_display,
+                    f"{base_currency} Value": f"{get_currency_symbol(base_currency)}{converted_value:,.2f}"
+                })
 
-        # Get theme colors
-        colors = get_theme_colors()
-        
-        # Use Streamlit's native expander with custom styling for the header
-        # Create a styled header that looks like the total row
-        st.markdown(f"""
-        <style>
-        div[data-testid="stExpander"] {{
-            border: none;
-            box-shadow: none;
-        }}
-        div[data-testid="stExpander"] > div:first-child {{
-            padding: 15px;
-            background-color: {colors['bg_secondary']};
-            border-top: 2px solid {colors['border']};
-            border-radius: 5px;
-        }}
-        div[data-testid="stExpander"] > div:first-child:hover {{
-            opacity: 0.9;
-        }}
-        </style>
-        """, unsafe_allow_html=True)
-        
-        # Create expander with styled label showing total
-        with st.expander(f"**TOTAL {base_currency}** — {get_currency_symbol(base_currency)}{total_converted:,.2f}", expanded=False):
-            # Display account breakdown table
-            render_data_table(breakdown_data)
+            # Get theme colors
+            colors = get_theme_colors()
+            
+            # Use Streamlit's native expander with custom styling for the header
+            # Create a styled header that looks like the total row
+            st.markdown(f"""
+            <style>
+            div[data-testid="stExpander"] {{
+                border: none;
+                box-shadow: none;
+            }}
+            div[data-testid="stExpander"] > div:first-child {{
+                padding: 15px;
+                background-color: {colors['bg_secondary']};
+                border-top: 2px solid {colors['border']};
+                border-radius: 5px;
+            }}
+            div[data-testid="stExpander"] > div:first-child:hover {{
+                opacity: 0.9;
+            }}
+            </style>
+            """, unsafe_allow_html=True)
+            
+            # Create expander with styled label showing total
+            with st.expander(f"**TOTAL {base_currency}** — {get_currency_symbol(base_currency)}{total_converted:,.2f}", expanded=False):
+                # Display account breakdown table
+                render_data_table(breakdown_data)
 
     st.divider()
 
     snapshot_dates = db.get_all_snapshot_dates()
 
+    # Time-series graphs (only show if multiple snapshots exist)
     if len(snapshot_dates) > 1:
         # Create two columns for side-by-side graphs
         graph_col1, graph_col2 = st.columns(2)
@@ -298,7 +335,7 @@ def dashboard(db):
 
         for snapshot_date in reversed(snapshot_dates):
             snapshots = db.get_snapshots_by_date(date.fromisoformat(snapshot_date))
-            net_worth = calculate_total_net_worth(snapshots, selected_currency, db)
+            net_worth = calculate_total_net_worth(snapshots, selected_currency, db, excluded_account_types=excluded_types)
 
             # Use month label instead of full date (uppercase month, year on next line)
             dt = datetime.fromisoformat(snapshot_date)
@@ -394,11 +431,14 @@ def dashboard(db):
 
         for i, snapshot_date in enumerate(reversed(snapshot_dates)):
             snapshots = db.get_snapshots_by_date(date.fromisoformat(snapshot_date))
+            
+            # Filter snapshots based on excluded account types
+            filtered_snapshots_for_chart = [s for s in snapshots if s.get("account_type") not in excluded_types]
 
             # Calculate totals for each currency (not converted) - dynamically initialize
             currency_totals = {curr: 0.0 for curr in enabled_currency_codes}
 
-            for snapshot in snapshots:
+            for snapshot in filtered_snapshots_for_chart:
                 curr = snapshot["currency"]
                 balance = snapshot["balance"]
                 if curr in currency_totals:
@@ -510,20 +550,30 @@ def dashboard(db):
             st.plotly_chart(fig_split, use_container_width=True)
         
         st.divider()
-                
-        # Create two columns for pie charts
-        pie_col1, pie_col2 = st.columns(2)
+    else:
+        # Show message only for time-series graphs
+        st.info("Add more monthly snapshots to see trends over time")
+        st.divider()
+    
+    # Create two columns for pie charts (show regardless of snapshot count)
+    pie_col1, pie_col2 = st.columns(2)
+    
+    # Get latest snapshots for pie charts
+    latest_snapshots_for_pie = db.get_latest_snapshots()
+    
+    if latest_snapshots_for_pie:
+        # Filter snapshots based on excluded account types
+        filtered_snapshots_for_pie = [s for s in latest_snapshots_for_pie if s.get("account_type") not in excluded_types]
         
-        # Get latest snapshots for pie charts
-        latest_snapshots = db.get_latest_snapshots()
-        
-        if latest_snapshots:
+        if not filtered_snapshots_for_pie:
+            st.info("All accounts are excluded. Adjust the filter to see pie charts.")
+        else:
             # Prepare data for pie charts
-            rates = json.loads(latest_snapshots[0]["exchange_rates"]) if latest_snapshots[0].get("exchange_rates") else {}
-            snapshot_date_str = latest_snapshots[0]["snapshot_date"]
+            rates = json.loads(filtered_snapshots_for_pie[0]["exchange_rates"]) if filtered_snapshots_for_pie[0].get("exchange_rates") else {}
+            snapshot_date_str = filtered_snapshots_for_pie[0]["snapshot_date"]
             
             # Fetch commodity prices
-            commodity_accounts = [s for s in latest_snapshots if s["account_type"] == "Commodity"]
+            commodity_accounts = [s for s in filtered_snapshots_for_pie if s["account_type"] == "Commodity"]
             commodity_prices = {}
             commodity_configs = {}
             
@@ -544,34 +594,15 @@ def dashboard(db):
             value_by_owner = {}
             value_by_type = {}
             
-            for snapshot in latest_snapshots:
-                is_commodity = snapshot["account_type"] == "Commodity"
-                
-                if is_commodity:
-                    commodity_name = snapshot.get("commodity")
-                    quantity = snapshot["balance"]
-                    
-                    if commodity_name and commodity_name in commodity_prices:
-                        price_per_ounce = commodity_prices[commodity_name].get(base_currency, 0)
-                        commodity_unit = "ounce"
-                        if commodity_name in commodity_configs:
-                            commodity_unit = commodity_configs[commodity_name].get('unit', 'ounce')
-                        
-                        price_per_unit = CurrencyConverter.convert_commodity_unit(
-                            price_per_ounce,
-                            "ounce",
-                            commodity_unit
-                        )
-                        converted_value = quantity * price_per_unit
-                    else:
-                        converted_value = 0.0
-                else:
-                    converted_value = get_converted_value(
-                        snapshot["balance"],
-                        snapshot["currency"],
-                        base_currency,
-                        rates
-                    )
+            for snapshot in filtered_snapshots_for_pie:
+                # Use the unified function to get converted value (handles both regular and commodity accounts)
+                converted_value = get_converted_account_value(
+                    snapshot,
+                    base_currency,
+                    rates,
+                    commodity_prices,
+                    commodity_configs
+                )
                 
                 # Aggregate by owner
                 owner = snapshot["owner"]
@@ -587,14 +618,12 @@ def dashboard(db):
             
             # Get theme colors
             colors = get_theme_colors()
-            
+        
             # Get currency symbol for pie charts
             currency_symbol = get_currency_symbol(base_currency)
             
             # Pie chart 1: Value by Owner
-            with pie_col1:
-                st.markdown("#### Value by Owner")
-                
+            with pie_col1:                
                 df_owner = pd.DataFrame([
                     {"Owner": owner, "Value": value}
                     for owner, value in value_by_owner.items()
@@ -636,9 +665,7 @@ def dashboard(db):
                 st.plotly_chart(fig_owner, use_container_width=True)
             
             # Pie chart 2: Value by Type
-            with pie_col2:
-                st.markdown("#### Value by Type")
-                
+            with pie_col2:                
                 df_type = pd.DataFrame([
                     {"Type": acc_type, "Value": value}
                     for acc_type, value in value_by_type.items()
@@ -678,291 +705,289 @@ def dashboard(db):
                 )
                 
                 st.plotly_chart(fig_type, use_container_width=True)
+
+    st.divider()
+    
+    # House Ownership Chart (if mortgage config exists)
+    # Initialize mortgage configuration if not present in session state
+    if "mortgage_config" not in st.session_state:
+        # Try to load from database
+        db_settings = db.get_mortgage_settings()
+        if db_settings:
+            st.session_state.mortgage_config = {
+                "lender_name": db_settings["lender_name"],
+                "loan_amount": float(db_settings["loan_amount"]),
+                "interest_rate": float(db_settings["interest_rate"]),
+                "loan_term_years": float(db_settings["loan_term_years"]),
+                "payments_per_year": int(db_settings["payments_per_year"]),
+                "start_date": date.fromisoformat(db_settings["start_date"]),
+                "recurring_extra_payment": float(db_settings["recurring_extra_payment"]),
+                "purchase_value": float(db_settings["purchase_value"]),
+                "present_value": float(db_settings["present_value"])
+            }
+    
+    if "mortgage_config" in st.session_state:
+        mortgage_config = st.session_state.mortgage_config
         
-        st.divider()
-        
-        # House Ownership Chart (if mortgage config exists)
-        # Initialize mortgage configuration if not present in session state
-        if "mortgage_config" not in st.session_state:
-            # Try to load from database
-            db_settings = db.get_mortgage_settings()
-            if db_settings:
-                st.session_state.mortgage_config = {
-                    "lender_name": db_settings["lender_name"],
-                    "loan_amount": float(db_settings["loan_amount"]),
-                    "interest_rate": float(db_settings["interest_rate"]),
-                    "loan_term_years": float(db_settings["loan_term_years"]),
-                    "payments_per_year": int(db_settings["payments_per_year"]),
-                    "start_date": date.fromisoformat(db_settings["start_date"]),
-                    "recurring_extra_payment": float(db_settings["recurring_extra_payment"]),
-                    "purchase_value": float(db_settings["purchase_value"]),
-                    "present_value": float(db_settings["present_value"])
-                }
-        
-        if "mortgage_config" in st.session_state:
-            mortgage_config = st.session_state.mortgage_config
+        # Check if we have the necessary mortgage data
+        if (mortgage_config.get("loan_amount", 0) > 0 and
+            mortgage_config.get("present_value", 0) > 0):
             
-            # Check if we have the necessary mortgage data
-            if (mortgage_config.get("loan_amount", 0) > 0 and
-                mortgage_config.get("present_value", 0) > 0):
-                
-                st.markdown("#### House Ownership Overview")
-                
-                # Calculate ownership metrics
-                present_value = mortgage_config.get("present_value", 0)
-                purchase_value = mortgage_config.get("purchase_value", 0)
-                
-                # Calculate current mortgage balance from schedule (nearest date)
-                try:
-                    # Get mortgage settings from database
-                    mortgage_settings = db.get_mortgage_settings()
-                    if mortgage_settings:
-                        # Get extra payments from database
-                        extra_payments_data = db.get_mortgage_extra_payments()
-                        custom_extra_payments = pd.DataFrame(extra_payments_data) if extra_payments_data else pd.DataFrame()
-                        if not custom_extra_payments.empty:
-                            custom_extra_payments = custom_extra_payments.rename(columns={
-                                'payment_number': 'PMT NO',
-                                'extra_payment_amount': 'EXTRA PAYMENT'
-                            })
-                        
-                        # Generate amortization schedule
-                        schedule_df, _ = generate_amortization_schedule(
-                            loan_amount=mortgage_settings['loan_amount'],
-                            annual_interest_rate=mortgage_settings['interest_rate'],
-                            loan_term_years=mortgage_settings['loan_term_years'],
-                            payments_per_year=mortgage_settings['payments_per_year'],
-                            start_date=date.fromisoformat(mortgage_settings['start_date']),
-                            recurring_extra_payment=mortgage_settings.get('recurring_extra_payment', 0.0),
-                            custom_extra_payments=custom_extra_payments
-                        )
-                        
-                        # Find the payment that has occurred most recently (on or before today)
-                        today = date.today()
-                        # Filter to only past/current payments
-                        past_payments = schedule_df[schedule_df['PAYMENT DATE'] <= today]
-                        
-                        if not past_payments.empty:
-                            # Use the most recent past payment's ending balance
-                            loan_amount = past_payments.iloc[-1]['ENDING BALANCE']
-                        else:
-                            # If no payments have been made yet, use the original loan amount
-                            loan_amount = mortgage_settings['loan_amount']
-                    else:
-                        # Fallback to initial loan amount if no settings found
-                        loan_amount = mortgage_config.get("loan_amount", 0)
-                except Exception as e:
-                    # Fallback to initial loan amount on any error
-                    # Print error for debugging
-                    import traceback
-                    print(f"Error calculating mortgage balance: {e}")
-                    print(traceback.format_exc())
-                    loan_amount = mortgage_config.get("loan_amount", 0)
-                
-                # Calculate equity (what you own)
-                equity = present_value - loan_amount
-                equity_percentage = (equity / present_value * 100) if present_value > 0 else 0
-                mortgage_percentage = (loan_amount / present_value * 100) if present_value > 0 else 0
-                
-                # Create three columns for metrics and chart
-                ownership_col1, ownership_col2, ownership_col3 = st.columns([1, 1, 2])
-                
-                with ownership_col1:
-                    st.metric("Present Value", format_currency(present_value))
-                    st.metric("Purchase Value", format_currency(purchase_value))
-                
-                with ownership_col2:
-                    st.metric("Your Equity", format_currency(equity))
-                    st.metric("Mortgage Balance", format_currency(loan_amount))
-                
-                with ownership_col3:
-                    # Create donut chart showing ownership split
-                    ownership_data = pd.DataFrame([
-                        {"Category": "Your Equity", "Value": equity},
-                        {"Category": "Mortgage Balance", "Value": loan_amount}
-                    ])
-                    
-                    fig_ownership = px.pie(
-                        ownership_data,
-                        values="Value",
-                        names="Category",
-                        title=f"Ownership Split",
-                        hole=0.5,  # Makes it a donut chart
-                        color="Category",
-                        color_discrete_map={
-                            "Your Equity": "#10b981",  # Green for equity
-                            "Mortgage Balance": "#ef4444"  # Red for mortgage
-                        }
-                    )
-                    
-                    fig_ownership.update_traces(
-                        textposition='inside',
-                        textinfo='percent',
-                        hovertemplate='<b>%{label}</b><br>Value: €%{value:,.2f}<br>Percentage: %{percent}<extra></extra>',
-                        textfont_size=16
-                    )
-                    
-                    # Get theme colors
-                    colors = get_theme_colors()
-                    
-                    fig_ownership.update_layout(
-                        plot_bgcolor=colors['plot_bg'],
-                        paper_bgcolor=colors['plot_bg'],
-                        font=dict(color=colors['plot_text']),
-                        title_font=dict(color=colors['text_primary'], size=16),
-                        hoverlabel=dict(
-                            bgcolor=colors['surface'],
-                            font_size=13,
-                            font_family="Arial, sans-serif",
-                            font_color=colors['text_primary']
-                        ),
-                        showlegend=True,
-                        legend=dict(
-                            orientation="h",
-                            yanchor="bottom",
-                            y=-0.2,
-                            xanchor="center",
-                            x=0.5,
-                            bgcolor=colors['surface'],
-                            bordercolor=colors['border'],
-                            borderwidth=1,
-                            font=dict(color=colors['text_primary'])
-                        ),
-                        annotations=[
-                            dict(
-                                text=f"{equity_percentage:.1f}%<br>Owned",
-                                x=0.5, y=0.5,
-                                font_size=20,
-                                font_color=colors['text_primary'],
-                                showarrow=False
-                            )
-                        ]
-                    )
-                    
-                    st.plotly_chart(fig_ownership, use_container_width=True)
-                
-                st.caption("💡 Based on present market value and current mortgage balance from Settings → Mortgage")
-                st.divider()
-
-        # Year-over-year comparison if we have enough data
-        if len(snapshot_dates) >= 12:
-            st.subheader("Year-over-Year Comparison")
-
-            # Currency selector for YoY graph
-            col1, col2 = st.columns([1, 3])
-            with col1:
-                yoy_currency = render_currency_selector(
-                    label="Select Currency",
-                    default_index=0,
-                    key="yoy_currency_selector"
-                )
-
-            # Get all unique years from snapshots
-            years = sorted(list(set([datetime.fromisoformat(d).year for d in snapshot_dates])))
-
-            # Month names in order (uppercase)
-            month_names = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-                          "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
-
-            # Create data structure with only months that have data
-            yoy_data = []
-
-            # Create a lookup dict for existing data
-            data_lookup = {}
-            for snapshot_date in snapshot_dates:
-                dt = datetime.fromisoformat(snapshot_date)
-                snapshots = db.get_snapshots_by_date(date.fromisoformat(snapshot_date))
-                total = calculate_total_net_worth(snapshots, yoy_currency, db)
-                key = (dt.year, dt.month)
-                data_lookup[key] = total
-
-            # Populate only months that have data (include year in x-axis label)
-            for year in years:
-                for month_num in range(1, 13):
-                    key = (year, month_num)
-                    if key in data_lookup:
-                        yoy_data.append({
-                            "Month": f"{month_names[month_num - 1]}<br>{year}",
-                            "Year": str(year),
-                            "Net Worth": data_lookup[key]
+            st.markdown("#### House Ownership Overview")
+            
+            # Calculate ownership metrics
+            present_value = mortgage_config.get("present_value", 0)
+            purchase_value = mortgage_config.get("purchase_value", 0)
+            
+            # Calculate current mortgage balance from schedule (nearest date)
+            try:
+                # Get mortgage settings from database
+                mortgage_settings = db.get_mortgage_settings()
+                if mortgage_settings:
+                    # Get extra payments from database
+                    extra_payments_data = db.get_mortgage_extra_payments()
+                    custom_extra_payments = pd.DataFrame(extra_payments_data) if extra_payments_data else pd.DataFrame()
+                    if not custom_extra_payments.empty:
+                        custom_extra_payments = custom_extra_payments.rename(columns={
+                            'payment_number': 'PMT NO',
+                            'extra_payment_amount': 'EXTRA PAYMENT'
                         })
-
-            df_yoy = pd.DataFrame(yoy_data)
-
-            currency_symbol = get_currency_symbol(yoy_currency)
-            fig_yoy = px.line(
-                df_yoy,
-                x="Month",
-                y="Net Worth",
-                color="Year",
-                title=f"Year-over-Year Comparison ({yoy_currency})",
-                markers=True
-            )
-
-            # Set month order
-            fig_yoy.update_xaxes(categoryorder='array', categoryarray=month_names)
-
-            fig_yoy.update_traces(
-                line=dict(width=3),
-                marker=dict(size=8),
-                hovertemplate=f'Net Worth: {currency_symbol}' + '%{y:,.2f}<br>' +
-                             '<extra></extra>'
-            )
-
-            # Get theme colors
-            colors = get_theme_colors()
-
-            fig_yoy.update_layout(
-                hovermode="x unified",
-                xaxis=dict(
-                    showline=True,
-                    linewidth=2,
-                    linecolor=colors['plot_axis'],
-                    mirror=False,
-                    showgrid=True,
-                    gridwidth=1,
-                    gridcolor=colors['plot_grid'],
-                    title_font=dict(size=14, family='Arial, sans-serif', color=colors['plot_text'], weight='bold'),
-                    showspikes=True,
-                    spikecolor=colors['plot_axis'],
-                    spikethickness=1
-                ),
-                yaxis=dict(
-                    showline=True,
-                    linewidth=2,
-                    linecolor=colors['plot_axis'],
-                    mirror=False,
-                    showgrid=True,
-                    gridwidth=1,
-                    gridcolor=colors['plot_grid'],
-                    title_font=dict(size=14, family='Arial, sans-serif', color=colors['plot_text'], weight='bold'),
-                    showspikes=True,
-                    spikecolor=colors['plot_axis'],
-                    spikethickness=1
-                ),
-                plot_bgcolor=colors['plot_bg'],
-                paper_bgcolor=colors['plot_bg'],
-                font=dict(color=colors['plot_text']),
-                title_font=dict(color=colors['text_primary']),
-                hoverlabel=dict(
-                    bgcolor=colors['surface'],
-                    font_size=13,
-                    font_family="Arial, sans-serif",
-                    font_color=colors['text_primary']
-                ),
-                legend=dict(
-                    title=dict(text="Year", font=dict(weight='bold', color=colors['text_primary'])),
-                    bgcolor=colors['surface'],
-                    bordercolor=colors['border'],
-                    borderwidth=1,
-                    font=dict(color=colors['text_primary'])
+                    
+                    # Generate amortization schedule
+                    schedule_df, _ = generate_amortization_schedule(
+                        loan_amount=mortgage_settings['loan_amount'],
+                        annual_interest_rate=mortgage_settings['interest_rate'],
+                        loan_term_years=mortgage_settings['loan_term_years'],
+                        payments_per_year=mortgage_settings['payments_per_year'],
+                        start_date=date.fromisoformat(mortgage_settings['start_date']),
+                        recurring_extra_payment=mortgage_settings.get('recurring_extra_payment', 0.0),
+                        custom_extra_payments=custom_extra_payments
+                    )
+                    
+                    # Find the payment that has occurred most recently (on or before today)
+                    today = date.today()
+                    # Filter to only past/current payments
+                    past_payments = schedule_df[schedule_df['PAYMENT DATE'] <= today]
+                    
+                    if not past_payments.empty:
+                        # Use the most recent past payment's ending balance
+                        loan_amount = past_payments.iloc[-1]['ENDING BALANCE']
+                    else:
+                        # If no payments have been made yet, use the original loan amount
+                        loan_amount = mortgage_settings['loan_amount']
+                else:
+                    # Fallback to initial loan amount if no settings found
+                    loan_amount = mortgage_config.get("loan_amount", 0)
+            except Exception as e:
+                # Fallback to initial loan amount on any error
+                # Print error for debugging
+                import traceback
+                print(f"Error calculating mortgage balance: {e}")
+                print(traceback.format_exc())
+                loan_amount = mortgage_config.get("loan_amount", 0)
+            
+            # Calculate equity (what you own)
+            equity = present_value - loan_amount
+            equity_percentage = (equity / present_value * 100) if present_value > 0 else 0
+            mortgage_percentage = (loan_amount / present_value * 100) if present_value > 0 else 0
+            
+            # Create three columns for metrics and chart
+            ownership_col1, ownership_col2, ownership_col3 = st.columns([1, 1, 2])
+            
+            with ownership_col1:
+                st.metric("Present Value", format_currency(present_value))
+                st.metric("Purchase Value", format_currency(purchase_value))
+            
+            with ownership_col2:
+                st.metric("Your Equity", format_currency(equity))
+                st.metric("Mortgage Balance", format_currency(loan_amount))
+            
+            with ownership_col3:
+                # Create donut chart showing ownership split
+                ownership_data = pd.DataFrame([
+                    {"Category": "Your Equity", "Value": equity},
+                    {"Category": "Mortgage Balance", "Value": loan_amount}
+                ])
+                
+                fig_ownership = px.pie(
+                    ownership_data,
+                    values="Value",
+                    names="Category",
+                    title=f"Ownership Split",
+                    hole=0.5,  # Makes it a donut chart
+                    color="Category",
+                    color_discrete_map={
+                        "Your Equity": "#10b981",  # Green for equity
+                        "Mortgage Balance": "#ef4444"  # Red for mortgage
+                    }
                 )
-            )
-            st.plotly_chart(fig_yoy, use_container_width=True)
-            st.markdown(
-                '<p style="text-align: right; font-size: 0.6rem; margin-top: -10px;">* Monthly exchange rates are derived from rates effective on the 1st of each month</p>',
-                unsafe_allow_html=True
-            )
+                
+                fig_ownership.update_traces(
+                    textposition='inside',
+                    textinfo='percent',
+                    hovertemplate='<b>%{label}</b><br>Value: €%{value:,.2f}<br>Percentage: %{percent}<extra></extra>',
+                    textfont_size=16
+                )
+                
+                # Get theme colors
+                colors = get_theme_colors()
+                
+                fig_ownership.update_layout(
+                    plot_bgcolor=colors['plot_bg'],
+                    paper_bgcolor=colors['plot_bg'],
+                    font=dict(color=colors['plot_text']),
+                    title_font=dict(color=colors['text_primary'], size=16),
+                    hoverlabel=dict(
+                        bgcolor=colors['surface'],
+                        font_size=13,
+                        font_family="Arial, sans-serif",
+                        font_color=colors['text_primary']
+                    ),
+                    showlegend=True,
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=-0.2,
+                        xanchor="center",
+                        x=0.5,
+                        bgcolor=colors['surface'],
+                        bordercolor=colors['border'],
+                        borderwidth=1,
+                        font=dict(color=colors['text_primary'])
+                    ),
+                    annotations=[
+                        dict(
+                            text=f"{equity_percentage:.1f}%<br>Owned",
+                            x=0.5, y=0.5,
+                            font_size=20,
+                            font_color=colors['text_primary'],
+                            showarrow=False
+                        )
+                    ]
+                )
+                
+                st.plotly_chart(fig_ownership, use_container_width=True)
+            
+            st.caption("💡 Based on present market value and current mortgage balance from Settings → Mortgage")
             st.divider()
-    else:
-        st.info("Add more monthly snapshots to see trends over time")
+
+    # Year-over-year comparison if we have enough data
+    if len(snapshot_dates) >= 12:
+        st.subheader("Year-over-Year Comparison")
+
+        # Currency selector for YoY graph
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            yoy_currency = render_currency_selector(
+                label="Select Currency",
+                default_index=0,
+                key="yoy_currency_selector"
+            )
+
+        # Get all unique years from snapshots
+        years = sorted(list(set([datetime.fromisoformat(d).year for d in snapshot_dates])))
+
+        # Month names in order (uppercase)
+        month_names = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                      "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+
+        # Create data structure with only months that have data
+        yoy_data = []
+
+        # Create a lookup dict for existing data
+        data_lookup = {}
+        for snapshot_date in snapshot_dates:
+            dt = datetime.fromisoformat(snapshot_date)
+            snapshots = db.get_snapshots_by_date(date.fromisoformat(snapshot_date))
+            total = calculate_total_net_worth(snapshots, yoy_currency, db, excluded_account_types=excluded_types)
+            key = (dt.year, dt.month)
+            data_lookup[key] = total
+
+        # Populate only months that have data (include year in x-axis label)
+        for year in years:
+            for month_num in range(1, 13):
+                key = (year, month_num)
+                if key in data_lookup:
+                    yoy_data.append({
+                        "Month": f"{month_names[month_num - 1]}<br>{year}",
+                        "Year": str(year),
+                        "Net Worth": data_lookup[key]
+                    })
+
+        df_yoy = pd.DataFrame(yoy_data)
+
+        currency_symbol = get_currency_symbol(yoy_currency)
+        fig_yoy = px.line(
+            df_yoy,
+            x="Month",
+            y="Net Worth",
+            color="Year",
+            title=f"Year-over-Year Comparison ({yoy_currency})",
+            markers=True
+        )
+
+        # Set month order
+        fig_yoy.update_xaxes(categoryorder='array', categoryarray=month_names)
+
+        fig_yoy.update_traces(
+            line=dict(width=3),
+            marker=dict(size=8),
+            hovertemplate=f'Net Worth: {currency_symbol}' + '%{y:,.2f}<br>' +
+                         '<extra></extra>'
+        )
+
+        # Get theme colors
+        colors = get_theme_colors()
+
+        fig_yoy.update_layout(
+            hovermode="x unified",
+            xaxis=dict(
+                showline=True,
+                linewidth=2,
+                linecolor=colors['plot_axis'],
+                mirror=False,
+                showgrid=True,
+                gridwidth=1,
+                gridcolor=colors['plot_grid'],
+                title_font=dict(size=14, family='Arial, sans-serif', color=colors['plot_text'], weight='bold'),
+                showspikes=True,
+                spikecolor=colors['plot_axis'],
+                spikethickness=1
+            ),
+            yaxis=dict(
+                showline=True,
+                linewidth=2,
+                linecolor=colors['plot_axis'],
+                mirror=False,
+                showgrid=True,
+                gridwidth=1,
+                gridcolor=colors['plot_grid'],
+                title_font=dict(size=14, family='Arial, sans-serif', color=colors['plot_text'], weight='bold'),
+                showspikes=True,
+                spikecolor=colors['plot_axis'],
+                spikethickness=1
+            ),
+            plot_bgcolor=colors['plot_bg'],
+            paper_bgcolor=colors['plot_bg'],
+            font=dict(color=colors['plot_text']),
+            title_font=dict(color=colors['text_primary']),
+            hoverlabel=dict(
+                bgcolor=colors['surface'],
+                font_size=13,
+                font_family="Arial, sans-serif",
+                font_color=colors['text_primary']
+            ),
+            legend=dict(
+                title=dict(text="Year", font=dict(weight='bold', color=colors['text_primary'])),
+                bgcolor=colors['surface'],
+                bordercolor=colors['border'],
+                borderwidth=1,
+                font=dict(color=colors['text_primary'])
+            )
+        )
+        st.plotly_chart(fig_yoy, use_container_width=True)
+        st.markdown(
+            '<p style="text-align: right; font-size: 0.6rem; margin-top: -10px;">* Monthly exchange rates are derived from rates effective on the 1st of each month</p>',
+            unsafe_allow_html=True
+        )
+        st.divider()

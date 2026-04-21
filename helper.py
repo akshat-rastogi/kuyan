@@ -388,8 +388,25 @@ def inject_custom_css():
     """, unsafe_allow_html=True)
 
 
-def calculate_total_net_worth(snapshots, base_currency, db):
-    """Calculate total net worth from snapshots in base currency"""
+def calculate_total_net_worth(snapshots, base_currency, db, excluded_account_types=None):
+    """Calculate total net worth from snapshots in base currency
+    
+    Args:
+        snapshots: List of account snapshots
+        base_currency: Target currency for conversion
+        db: Database instance
+        excluded_account_types: Optional list of account types to exclude from calculation
+    
+    Returns:
+        float: Total net worth in base currency
+    """
+    if not snapshots:
+        return 0.0
+    
+    # Filter out excluded account types if specified
+    if excluded_account_types:
+        snapshots = [s for s in snapshots if s.get("account_type") not in excluded_account_types]
+    
     if not snapshots:
         return 0.0
 

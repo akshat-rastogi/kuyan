@@ -47,7 +47,7 @@ class Database:
                 )
             """)
 
-            # Accounts table
+            # Accounts table with commodity and unit columns
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS accounts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,17 +55,11 @@ class Database:
                     owner TEXT NOT NULL,
                     account_type TEXT NOT NULL,
                     currency TEXT NOT NULL,
+                    commodity TEXT,
+                    unit TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            
-            # Add commodity and unit columns if they don't exist (for existing databases)
-            cursor.execute("PRAGMA table_info(accounts)")
-            columns = [column[1] for column in cursor.fetchall()]
-            if 'commodity' not in columns:
-                cursor.execute("ALTER TABLE accounts ADD COLUMN commodity TEXT")
-            if 'unit' not in columns:
-                cursor.execute("ALTER TABLE accounts ADD COLUMN unit TEXT")
 
             # Snapshots table
             cursor.execute("""
@@ -97,7 +91,7 @@ class Database:
                 )
             """)
 
-            # Commodities table
+            # Commodities table with unit column
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS commodities (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,15 +103,8 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            
-            # Add unit column if it doesn't exist (for existing databases)
-            cursor.execute("PRAGMA table_info(commodities)")
-            columns = [column[1] for column in cursor.fetchall()]
-            if 'unit' not in columns:
-                cursor.execute("ALTER TABLE commodities ADD COLUMN unit TEXT NOT NULL DEFAULT 'ounce'")
 
-            # Mortgage settings table
-            # NOTE: No default mortgage data is seeded. Users must configure mortgage manually.
+            # Mortgage settings table with all columns
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS mortgage_settings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,51 +124,8 @@ class Database:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            
-            # Add mortgage_name column if it doesn't exist (for existing databases)
-            cursor.execute("PRAGMA table_info(mortgage_settings)")
-            columns = [column[1] for column in cursor.fetchall()]
-            if 'mortgage_name' not in columns:
-                cursor.execute("ALTER TABLE mortgage_settings ADD COLUMN mortgage_name TEXT")
-                # Update existing records with a default name
-                cursor.execute("UPDATE mortgage_settings SET mortgage_name = 'Primary Mortgage' WHERE mortgage_name IS NULL")
-                # Make it NOT NULL after updating
-                cursor.execute("""
-                    CREATE TABLE mortgage_settings_new (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        mortgage_name TEXT NOT NULL UNIQUE,
-                        lender_name TEXT NOT NULL,
-                        loan_amount DECIMAL(15,2) NOT NULL,
-                        interest_rate DECIMAL(10,4) NOT NULL,
-                        loan_term_years DECIMAL(10,4) NOT NULL,
-                        payments_per_year INTEGER NOT NULL,
-                        start_date DATE NOT NULL,
-                        recurring_extra_payment DECIMAL(15,2) NOT NULL DEFAULT 0.0,
-                        purchase_value DECIMAL(15,2) NOT NULL DEFAULT 0.0,
-                        present_value DECIMAL(15,2) NOT NULL DEFAULT 0.0,
-                        currency TEXT NOT NULL DEFAULT 'EUR',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                cursor.execute("""
-                    INSERT INTO mortgage_settings_new
-                    SELECT id, mortgage_name, lender_name, loan_amount, interest_rate,
-                           loan_term_years, payments_per_year, start_date, recurring_extra_payment,
-                           purchase_value, present_value, currency, created_at, updated_at
-                    FROM mortgage_settings
-                """)
-                cursor.execute("DROP TABLE mortgage_settings")
-                cursor.execute("ALTER TABLE mortgage_settings_new RENAME TO mortgage_settings")
-            
-            if 'currency' not in columns:
-                cursor.execute("ALTER TABLE mortgage_settings ADD COLUMN currency TEXT NOT NULL DEFAULT 'EUR'")
-            
-            if 'defer_months' not in columns:
-                cursor.execute("ALTER TABLE mortgage_settings ADD COLUMN defer_months INTEGER NOT NULL DEFAULT 0")
 
-            # Mortgage extra payments table
-            # NOTE: No default extra payments are seeded. Users must configure manually.
+            # Mortgage extra payments table with mortgage_id
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS mortgage_extra_payments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -192,17 +136,6 @@ class Database:
                     FOREIGN KEY (mortgage_id) REFERENCES mortgage_settings(id) ON DELETE CASCADE
                 )
             """)
-            
-            # Add mortgage_id column if it doesn't exist (for existing databases)
-            cursor.execute("PRAGMA table_info(mortgage_extra_payments)")
-            columns = [column[1] for column in cursor.fetchall()]
-            if 'mortgage_id' not in columns:
-                cursor.execute("ALTER TABLE mortgage_extra_payments ADD COLUMN mortgage_id INTEGER")
-                # Link existing payments to the first mortgage
-                cursor.execute("SELECT id FROM mortgage_settings ORDER BY id LIMIT 1")
-                first_mortgage = cursor.fetchone()
-                if first_mortgage:
-                    cursor.execute("UPDATE mortgage_extra_payments SET mortgage_id = ? WHERE mortgage_id IS NULL", (first_mortgage[0],))
 
             # Create index for faster queries on mortgage_id and payment number
             cursor.execute("""
@@ -692,8 +625,13 @@ class Database:
 
             commodity_name = row[0]
 
-            # Check if commodity is used by any account (assuming accounts can have commodities)
-            # For now, we'll allow deletion since commodities aren't linked to accounts yet
+            # Check if commodity is used by any account
+            cursor.execute("SELECT COUNT(*) FROM accounts WHERE commodity = ?", (commodity_name,))
+            count = cursor.fetchone()[0]
+
+            if count > 0:
+                return False
+
             cursor.execute("DELETE FROM commodities WHERE id = ?", (commodity_id,))
             return True
 
@@ -701,14 +639,6 @@ class Database:
         """Check if commodity is used by any account"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
-            # Check if commodity column exists
-            cursor.execute("PRAGMA table_info(accounts)")
-            columns = [column[1] for column in cursor.fetchall()]
-            
-            if 'commodity' not in columns:
-                return False
-            
             cursor.execute("SELECT COUNT(*) FROM accounts WHERE commodity = ?", (name,))
             return cursor.fetchone()[0] > 0
 
@@ -936,3 +866,5 @@ class Database:
                 cursor.execute("DELETE FROM mortgage_extra_payments WHERE mortgage_id = ?", (mortgage_id,))
             else:
                 cursor.execute("DELETE FROM mortgage_extra_payments")
+
+# Made with Bob

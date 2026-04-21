@@ -62,6 +62,11 @@ def init_db(sandbox_mode=False, _cache_version=1):
     return db
 
 
+# Clear cache on rerun if requested
+if st.session_state.get('clear_cache', False):
+    init_db.clear()
+    st.session_state.clear_cache = False
+
 db = init_db(sandbox_mode=is_sandbox, _cache_version=4)
 
 # Set global variables for components module
