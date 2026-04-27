@@ -47,4 +47,3 @@ print(f"Total value: ${total_value:.2f}")
 print(f"Expected: ~$643.01 (10 * 64.30)")
 print("=" * 60)
 
-# Made with Bob

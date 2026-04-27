@@ -80,4 +80,3 @@ if __name__ == "__main__":
     success = test_snapshot_unit()
     sys.exit(0 if success else 1)
 
-# Made with Bob

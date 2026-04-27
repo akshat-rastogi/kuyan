@@ -134,4 +134,3 @@ print("2. Converts it to price per configured unit (gram, ounce, kg, etc.)")
 print("3. Multiplies by the quantity to get total value")
 print("=" * 70)
 
-# Made with Bob

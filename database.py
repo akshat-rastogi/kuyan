@@ -8,6 +8,8 @@ import sqlite3
 from datetime import date
 from typing import List, Dict, Optional
 import json
+import os
+import shutil
 from contextlib import contextmanager
 
 
@@ -180,6 +182,31 @@ class Database:
                     default_commodities
                 )
 
+    def create_backup_snapshot(self, target_path: str):
+        """Create a filesystem-level backup copy of the current database file."""
+        if not os.path.exists(self.db_path):
+            raise FileNotFoundError(f"Database file not found: {self.db_path}")
+
+        with self.get_connection():
+            pass
+
+        os.makedirs(os.path.dirname(target_path) or ".", exist_ok=True)
+        shutil.copy2(self.db_path, target_path)
+
+    def replace_database_file(self, source_path: str):
+        """Replace the current database file with another SQLite file."""
+        if not os.path.exists(source_path):
+            raise FileNotFoundError(f"Source database file not found: {source_path}")
+
+        with self.get_connection():
+            pass
+
+        backup_path = f"{self.db_path}.pre_restore_backup"
+        if os.path.exists(self.db_path):
+            shutil.copy2(self.db_path, backup_path)
+
+        shutil.copy2(source_path, self.db_path)
+
     # Owner Operations
     def add_owner(self, name: str, owner_type: str) -> int:
         """Add a new owner"""
@@ -189,7 +216,7 @@ class Database:
                 INSERT INTO owners (name, owner_type)
                 VALUES (?, ?)
             """, (name, owner_type))
-            return cursor.lastrowid
+            return cursor.lastrowid or 0
 
     def get_owners(self) -> List[Dict]:
         """Get all owners"""
@@ -279,7 +306,7 @@ class Database:
                 INSERT INTO accounts (name, owner, account_type, currency, commodity, unit)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (name, owner, account_type, currency, commodity, unit))
-            return cursor.lastrowid
+            return cursor.lastrowid or 0
 
     def get_accounts(self) -> List[Dict]:
         """Get all accounts"""
@@ -500,7 +527,7 @@ class Database:
                 INSERT INTO currencies (code, flag_emoji, color, display_order)
                 VALUES (?, ?, ?, ?)
             """, (code, flag_emoji, color, max_order + 1))
-            return cursor.lastrowid
+            return cursor.lastrowid or 0
 
     def delete_currency(self, currency_id: int) -> bool:
         """Delete a currency if not used by any account"""
@@ -610,7 +637,7 @@ class Database:
                 INSERT INTO commodities (name, symbol, color, unit, display_order)
                 VALUES (?, ?, ?, ?, ?)
             """, (name, symbol, color, unit, max_order + 1))
-            return cursor.lastrowid
+            return cursor.lastrowid or 0
 
     def delete_commodity(self, commodity_id: int) -> bool:
         """Delete a commodity if not used by any account"""
@@ -867,4 +894,3 @@ class Database:
             else:
                 cursor.execute("DELETE FROM mortgage_extra_payments")
 
-# Made with Bob

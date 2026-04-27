@@ -162,4 +162,3 @@ def mortgage(db: Database):
     metric_col_5.metric("Total early payments", format_currency(summary["total_early_payments"]))
     metric_col_6.metric("Total interest", format_currency(summary["total_interest"]))
 
-# Made with Bob

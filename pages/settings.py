@@ -8,6 +8,7 @@ Licensed under MIT License - see LICENSE file for details
 import streamlit as st
 from database import Database
 from pages.accounts_settings import accounts_settings
+from pages.backup_restore_settings import backup_restore_settings
 from pages.currencies_settings import currencies_settings
 from pages.commodities_settings import commodities_settings
 from pages.mortgage_settings import mortgage_settings
@@ -44,9 +45,9 @@ def settings(db: Database):
         </style>
     """, unsafe_allow_html=True)
     
-    # Create tabs for the five settings pages
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
-        ["🏦 Accounts", "🥇 Commodities", "💱 Currencies", "👥 Owners", "🏠 Mortgage"]
+    # Create tabs for the settings pages
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+        ["🏦 Accounts", "🥇 Commodities", "💱 Currencies", "👥 Owners", "🏠 Mortgage", "☁️ Backup & Restore"]
     )
     
     # Only render content in active tab to avoid key conflicts
@@ -65,3 +66,6 @@ def settings(db: Database):
     
     with tab5:
         mortgage_settings(db, key_prefix="mortgage_settings_")
+
+    with tab6:
+        backup_restore_settings(db, key_prefix="backup_restore_")

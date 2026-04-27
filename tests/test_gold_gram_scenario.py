@@ -52,4 +52,3 @@ print("  The conversion now correctly divides price by units per ounce,")
 print("  giving the correct price per gram and total value.")
 print("=" * 70)
 
-# Made with Bob

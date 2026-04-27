@@ -67,7 +67,7 @@ if st.session_state.get('clear_cache', False):
     init_db.clear()
     st.session_state.clear_cache = False
 
-db = init_db(sandbox_mode=is_sandbox, _cache_version=4)
+db = init_db(sandbox_mode=is_sandbox, _cache_version=5)
 
 # Set global variables for components module
 set_globals(db, is_sandbox)
@@ -97,6 +97,10 @@ def main():
     if st.session_state.get('sandbox_reset', False):
         st.toast("Sandbox reset successfully!", icon="🔄")
         st.session_state.sandbox_reset = False
+
+    if st.session_state.get('restore_completed', False):
+        st.toast("Database restored successfully!", icon="✅")
+        st.session_state.restore_completed = False
 
     # Initialize session state
     if "base_currency" not in st.session_state:

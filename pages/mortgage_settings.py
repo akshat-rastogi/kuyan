@@ -319,4 +319,3 @@ def mortgage_settings(db: Database, key_prefix=""):
                 with prop_col3:
                     st.metric("Down Payment", format_currency(down_payment))
 
-# Made with Bob

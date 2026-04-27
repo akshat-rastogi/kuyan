@@ -82,4 +82,3 @@ print(f"Match: {'✓ YES' if abs(result_ounce - expected_ounce) < 0.01 else '✗
 
 print("\n" + "=" * 70)
 
-# Made with Bob
