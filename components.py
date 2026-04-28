@@ -157,25 +157,7 @@ def render_tool_button(icon, label, state_key, widget_renderer):
 
     # Render widget if open
     if is_open:
-        # Visual connection using columns for indentation
-        col_spacer, col_content = st.columns([0.08, 0.92])
-
-        with col_spacer:
-            # Subtle vertical line indicator
-            st.markdown(f"""
-                <div style="
-                    width: 2px;
-                    background-color: {colors['border']};
-                    height: 100%;
-                    min-height: 500px;
-                    border-radius: 1px;
-                    opacity: 0.6;
-                "></div>
-            """, unsafe_allow_html=True)
-
-        with col_content:
-            # Render the actual widget content
-            widget_renderer()
+        widget_renderer()
 
 
 def render_exchange_rate_widget_inline():
@@ -402,6 +384,141 @@ END:VCALENDAR"""
             st.success("Calendar invite generated! Click above to download.")
         else:
             st.error("Please enter at least one email address")
+
+def render_calculator_widget():
+    """Calculator widget content"""
+
+    # Initialize calculator history in session state
+    if "calc_history" not in st.session_state:
+        st.session_state.calc_history = []
+    if "calc_trigger" not in st.session_state:
+        st.session_state.calc_trigger = False
+
+    # Callback to trigger calculation on Enter
+    def on_enter():
+        st.session_state.calc_trigger = True
+
+    # Calculator input
+    expression = st.text_input(
+        "Enter calculation",
+        placeholder="e.g., 1500 * 1.35 + 200",
+        key="calc_input",
+        help="Use +, -, *, /, (), and numbers. Press Enter to calculate.",
+        on_change=on_enter
+    )
+
+    # Calculate and Clear buttons
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        calculate = st.button("Calculate", width="stretch", type="primary", key="calc_button")
+    with col2:
+        clear_history = st.button("Clear History", width="stretch", key="clear_calc_history")
+
+    # Check if calculation should be triggered (by Enter or button click)
+    should_calculate = calculate or st.session_state.calc_trigger
+    if st.session_state.calc_trigger:
+        st.session_state.calc_trigger = False  # Reset trigger
+
+    # Clear history
+    if clear_history:
+        st.session_state.calc_history = []
+        st.rerun()
+
+    # Perform calculation
+    if should_calculate and expression:
+        try:
+            # Avoid double-processing when both Enter and button click trigger the same expression
+            last_expression = st.session_state.get("last_calc_expression")
+            last_result = st.session_state.get("last_calc_result")
+
+            if expression != last_expression:
+                # Safe evaluation of mathematical expressions
+                result = eval(expression, {"__builtins__": {}}, {})
+
+                # Add to history
+                st.session_state.calc_history.insert(0, {
+                    "expression": expression,
+                    "result": result
+                })
+
+                # Keep only last 5 calculations
+                st.session_state.calc_history = st.session_state.calc_history[:5]
+
+                st.session_state.last_calc_expression = expression
+                st.session_state.last_calc_result = result
+            else:
+                result = last_result
+
+            # Display result
+            st.success(f"**Result:** {result:,.2f}")
+
+        except Exception as e:
+            st.error(f"Invalid expression: {str(e)}")
+
+    # Display calculation history
+    if st.session_state.calc_history:
+        st.divider()
+        st.caption("Recent Calculations")
+
+        for calc in st.session_state.calc_history:
+            with st.container():
+                col1, col2 = st.columns([1.5, 1])
+                with col1:
+                    st.text(calc["expression"])
+                with col2:
+                    st.text(f"= {calc['result']:,.2f}")
+
+
+def render_export_widget():
+    """Export Dashboard widget for exporting as PDF/PNG"""
+
+    st.write("**Export Dashboard**")
+    st.caption("Export the dashboard view in various formats")
+
+    # Format selector
+    export_format = st.selectbox(
+        "Select Format",
+        options=["PNG (Image)", "PDF (Document)", "HTML (Interactive)"],
+        key="export_format"
+    )
+
+    st.write("")
+
+    # Export instructions
+    if export_format == "PNG (Image)":
+        st.info("""
+**PNG Export Instructions:**
+1. Navigate to the Dashboard tab
+2. Use your browser's screenshot tool or:
+   - **Windows**: Win + Shift + S
+   - **Mac**: Cmd + Shift + 4
+   - **Linux**: Use Screenshot tool
+3. Select the dashboard area to capture
+        """)
+
+    elif export_format == "PDF (Document)":
+        st.info("""
+**PDF Export Instructions:**
+1. Navigate to the Dashboard tab
+2. Use browser's Print function:
+   - **Chrome/Edge**: Ctrl/Cmd + P
+   - Select "Save as PDF" as destination
+   - Choose "Save"
+        """)
+
+    elif export_format == "HTML (Interactive)":
+        st.info("""
+**HTML Export Instructions:**
+1. Navigate to the Dashboard tab
+2. Use browser's Save Page function:
+   - **Chrome/Edge**: Ctrl/Cmd + S
+   - Select "Webpage, Complete"
+   - Choose save location
+        """)
+
+    st.divider()
+    st.caption("Tip: retract the side bar using the top arrow before exporting")
+
 
 
 def render_navbar():

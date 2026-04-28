@@ -8,6 +8,7 @@ import streamlit as st
 import os
 from version import __version__
 from database import Database
+from components import render_tool_button, render_calculator_widget, render_export_widget
 
 
 def sidebar(is_sandbox):
@@ -49,10 +50,6 @@ def sidebar(is_sandbox):
             st.session_state.settings_nav = "Accounts"
             st.rerun()
 
-        if st.button("💹 Exchange Rates", width="stretch"):
-            st.session_state.settings_nav = "Exchange Rates"
-            st.rerun()
-
         st.divider()
 
         # Settings section header
@@ -70,6 +67,30 @@ def sidebar(is_sandbox):
 
         if st.button("👥 Owners", width="stretch"):
             st.session_state.settings_nav = "Owners Settings"
+            st.rerun()
+
+        st.divider()
+
+        # Settings section header
+        st.markdown("<p style='text-align: left; font-size: 0.875rem; color: gray; margin-bottom: 10px;'>WIDGETS</p>", unsafe_allow_html=True)
+
+        # Tools section
+        render_tool_button(
+            icon="🧮",
+            label="Calculator",
+            state_key="calculator_panel_open",
+            widget_renderer=render_calculator_widget
+        )
+
+        render_tool_button(
+            icon="📥",
+            label="Export Dashboard",
+            state_key="export_panel_open",
+            widget_renderer=render_export_widget
+        )
+
+        if st.button("💹 Exchange Rates", width="stretch"):
+            st.session_state.settings_nav = "Exchange Rates"
             st.rerun()
 
         if st.button("☁️ Backup & Restore", width="stretch"):
