@@ -147,9 +147,8 @@ def backup_restore_settings(db: Database, key_prefix: str = ""):
                 
                 uploaded_file = st.file_uploader(
                     "Choose backup file",
-                    type=["db", "sqlite", "sqlite3"],
                     key=f"{key_prefix}file_upload",
-                    help="Select a KUYAN backup database file (.db, .sqlite, or .sqlite3). iOS may rename database files during upload.",
+                    help="Select a KUYAN backup database file. iOS Files may gray out .db files when file types are restricted, so the picker accepts any file and validation happens during restore.",
                 )
                 
                 if uploaded_file:
