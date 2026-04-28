@@ -7,6 +7,7 @@ This module provides abstraction for multiple cloud backup providers.
 
 import json
 import os
+import sqlite3
 import tempfile
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
@@ -530,12 +531,23 @@ class LocalFileProvider(BackupProvider):
         uploaded_file = st.session_state.get("local_restore_file")
         if not uploaded_file:
             raise RuntimeError("No file uploaded for restore")
-        
+
+        uploaded_bytes = uploaded_file.getvalue()
+        if not uploaded_bytes:
+            raise RuntimeError("Uploaded file is empty")
+
         with tempfile.TemporaryDirectory() as temp_dir:
-            restore_path = os.path.join(temp_dir, self.BACKUP_FILE)
-            
+            uploaded_name = Path(getattr(uploaded_file, "name", self.BACKUP_FILE)).name or self.BACKUP_FILE
+            restore_path = os.path.join(temp_dir, uploaded_name)
+
             with open(restore_path, "wb") as f:
-                f.write(uploaded_file.getvalue())
-            
+                f.write(uploaded_bytes)
+
+            try:
+                with sqlite3.connect(restore_path) as conn:
+                    conn.execute("PRAGMA schema_version;").fetchone()
+            except sqlite3.DatabaseError as exc:
+                raise RuntimeError("Uploaded file is not a valid SQLite database backup") from exc
+
             db.replace_database_file(restore_path)
 

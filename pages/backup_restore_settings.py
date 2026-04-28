@@ -23,8 +23,6 @@ def backup_restore_settings(db: Database, key_prefix: str = ""):
         db: Database instance
         key_prefix: Prefix for widget keys to avoid conflicts when used in tabs
     """
-    st.subheader("Backup & Restore")
-
     if "sandbox" in db.db_path:
         st.info("Cloud backup and restore is disabled in sandbox mode.")
         return
@@ -149,9 +147,9 @@ def backup_restore_settings(db: Database, key_prefix: str = ""):
                 
                 uploaded_file = st.file_uploader(
                     "Choose backup file",
-                    type=["db"],
+                    type=["db", "sqlite", "sqlite3"],
                     key=f"{key_prefix}file_upload",
-                    help="Select a kuyan.db backup file to restore",
+                    help="Select a KUYAN backup database file (.db, .sqlite, or .sqlite3). iOS may rename database files during upload.",
                 )
                 
                 if uploaded_file:

@@ -13,7 +13,9 @@ from pages.dashboard import dashboard
 from pages.update_balances import update_balances
 from pages.exchange_rates import exchange_rates
 from pages.assets import assets
-from pages.settings import settings
+from pages.accounts_settings import accounts_settings
+from pages.owners_settings import owners_settings
+from pages.backup_restore_settings import backup_restore_settings
 from helper import (
     get_default_currency,
     inject_custom_css,
@@ -124,8 +126,18 @@ def main():
     # Route to the appropriate page based on navigation
     if selected_page == "Assets":
         assets(db=db)
-    elif selected_page == "Settings":
-        settings(db=db)
+    elif selected_page == "Accounts Settings":
+        st.title("🏦 Accounts")
+        st.divider()
+        accounts_settings(db=db, key_prefix="accounts_")
+    elif selected_page == "Owners Settings":
+        st.title("👥 Owners")
+        st.divider()
+        owners_settings(db=db, key_prefix="owners_")
+    elif selected_page == "Backup & Restore":
+        st.title("☁️ Backup & Restore")
+        st.divider()
+        backup_restore_settings(db=db, key_prefix="backup_restore_")
     elif selected_page == "Exchange Rates":
         exchange_rates(db=db)
     elif selected_page == "Accounts":
@@ -136,6 +148,7 @@ def main():
     else:
         # Default: Dashboard Overview
         st.title("📊 Dashboard")
+        st.divider()
         dashboard(db=db)
 
 

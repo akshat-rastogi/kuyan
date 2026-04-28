@@ -55,14 +55,25 @@ def sidebar(is_sandbox):
 
         st.divider()
 
+        # Settings section header
+        st.markdown("<p style='text-align: left; font-size: 0.875rem; color: gray; margin-bottom: 10px;'>SETTINGS</p>", unsafe_allow_html=True)
+
         # Assets section
         if st.button("💎 Assets", width="stretch"):
             st.session_state.settings_nav = "Assets"
             st.rerun()
 
-        # Settings section - moved to bottom
-        if st.button("⚙️ Settings", width="stretch"):
-            st.session_state.settings_nav = "Settings"
+        # Settings menu items as separate pages
+        if st.button("🏦 Accounts", width="stretch"):
+            st.session_state.settings_nav = "Accounts Settings"
+            st.rerun()
+
+        if st.button("👥 Owners", width="stretch"):
+            st.session_state.settings_nav = "Owners Settings"
+            st.rerun()
+
+        if st.button("☁️ Backup & Restore", width="stretch"):
+            st.session_state.settings_nav = "Backup & Restore"
             st.rerun()
 
         page = st.session_state.settings_nav
