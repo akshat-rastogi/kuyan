@@ -1,6 +1,5 @@
 """
 KUYAN - Monthly Net Worth Tracker
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 
 Component rendering functions for the KUYAN application.

@@ -1,7 +1,6 @@
 """
 KUYAN - Monthly Net Worth Tracker
 Currency Constants Module
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 """
 

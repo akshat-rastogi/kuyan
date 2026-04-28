@@ -4,7 +4,6 @@ KUYAN - Sandbox Database Creator
 Create a sandbox database with sample data for KUYAN
 This database will be used for the /sandbox URL
 
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 """
 

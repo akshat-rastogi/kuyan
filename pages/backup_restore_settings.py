@@ -1,7 +1,6 @@
 """
 KUYAN - Monthly Net Worth Tracker
 Backup & Restore Settings Module - Multi-provider backup and restore functionality
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 """
 

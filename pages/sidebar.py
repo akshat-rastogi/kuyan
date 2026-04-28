@@ -1,7 +1,6 @@
 """
 KUYAN - Monthly Net Worth Tracker
 Sidebar Module - Handles sidebar navigation and related functionality
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 """
 
@@ -55,6 +54,11 @@ def sidebar(is_sandbox):
             st.rerun()
 
         st.divider()
+
+        # Assets section
+        if st.button("💎 Assets", width="stretch"):
+            st.session_state.settings_nav = "Assets"
+            st.rerun()
 
         # Settings section - moved to bottom
         if st.button("⚙️ Settings", width="stretch"):

@@ -1,7 +1,6 @@
 """
 KUYAN - Monthly Net Worth Tracker
 Mortgage Settings Page Module - Configure mortgage details
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 """
 

@@ -1,9 +1,9 @@
 """
 KUYAN - Monthly Net Worth Tracker
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 """
 
+import os
 import streamlit as st
 from database import Database
 from pages.sidebar import sidebar
@@ -12,6 +12,7 @@ from pages.history import history
 from pages.dashboard import dashboard
 from pages.update_balances import update_balances
 from pages.exchange_rates import exchange_rates
+from pages.assets import assets
 from pages.settings import settings
 from helper import (
     get_default_currency,
@@ -47,7 +48,11 @@ st.markdown("""
 
 # Initialize database (sandbox or production)
 @st.cache_resource
-def init_db(sandbox_mode=False, _cache_version=1):
+def init_db(sandbox_mode=False, _cache_version=1, _db_mtime=None):
+    """
+    Initialize database with cache invalidation based on file modification time.
+    _db_mtime parameter forces cache refresh when database file is modified.
+    """
     db_path = "kuyan-sandbox.db" if sandbox_mode else "kuyan.db"
 
     db = Database(db_path=db_path)
@@ -62,12 +67,17 @@ def init_db(sandbox_mode=False, _cache_version=1):
     return db
 
 
+# Get database file modification time to detect changes
+db_path = "kuyan-sandbox.db" if is_sandbox else "kuyan.db"
+db_mtime = os.path.getmtime(db_path) if os.path.exists(db_path) else 0
+
 # Clear cache on rerun if requested
 if st.session_state.get('clear_cache', False):
     init_db.clear()
     st.session_state.clear_cache = False
+    st.rerun()
 
-db = init_db(sandbox_mode=is_sandbox, _cache_version=5)
+db = init_db(sandbox_mode=is_sandbox, _cache_version=5, _db_mtime=db_mtime)
 
 # Set global variables for components module
 set_globals(db, is_sandbox)
@@ -112,7 +122,9 @@ def main():
     selected_page = sidebar(is_sandbox)
 
     # Route to the appropriate page based on navigation
-    if selected_page == "Settings":
+    if selected_page == "Assets":
+        assets(db=db)
+    elif selected_page == "Settings":
         settings(db=db)
     elif selected_page == "Exchange Rates":
         exchange_rates(db=db)

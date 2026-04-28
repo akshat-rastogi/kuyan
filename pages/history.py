@@ -1,6 +1,5 @@
 """
 KUYAN - History Page Module
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 """
 
@@ -10,6 +9,7 @@ import json
 import pandas as pd
 from io import StringIO
 from components import render_data_table
+from currencyConverter import CurrencyConverter
 from helper import (
     get_currency_symbol,
     get_default_currency,
@@ -38,41 +38,83 @@ def render_mortgage_amortization_tab(db):
     st.markdown("### 🏠 Mortgage Amortization Schedule")
     st.caption("Interactive mortgage amortization calculator with recurring and one-off extra payments.")
     
-    # Get all mortgages from database
-    all_mortgages = db.get_all_mortgages()
+    # Get all properties with mortgages
+    all_properties = db.get_all_properties_with_financials()
     
-    # Check if any mortgages exist
-    if not all_mortgages:
-        st.warning("⚠️ No mortgages configured. Please configure your mortgage details in Settings → Mortgage tab.")
-        st.info("👉 Go to **Settings** page and select the **🏠 Mortgage** tab to add your mortgage details.")
+    # Filter properties that have mortgages
+    properties_with_mortgages = [p for p in all_properties if p.get('mortgages')]
+    
+    # Check if any properties with mortgages exist
+    if not properties_with_mortgages:
+        st.warning("⚠️ No properties with mortgages configured. Please configure your properties and mortgages in Settings → Properties tab.")
+        st.info("👉 Go to **Settings** page and select the **🏘️ Properties** tab to add properties and their mortgages.")
         return
     
-    # Create dropdown for mortgage selection
-    mortgage_names = [m['mortgage_name'] for m in all_mortgages]
+    # Create property dropdown
+    property_names = [p['property_name'] for p in properties_with_mortgages]
+    property_map = {p['property_name']: p for p in properties_with_mortgages}
     
-    # Initialize selected mortgage in session state
-    if "selected_mortgage_name" not in st.session_state:
-        st.session_state.selected_mortgage_name = mortgage_names[0]
+    # Initialize selected property in session state
+    if "selected_property_name_history" not in st.session_state:
+        st.session_state.selected_property_name_history = property_names[0]
     
-    # Mortgage selector
-    selected_mortgage_name = st.selectbox(
-        "Select Mortgage",
-        options=mortgage_names,
-        index=mortgage_names.index(st.session_state.selected_mortgage_name) if st.session_state.selected_mortgage_name in mortgage_names else 0,
-        key="mortgage_selector_history",
-        help="Select which mortgage to view the amortization schedule for"
-    )
+    # Property selector
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        selected_property_name = st.selectbox(
+            "Select Property",
+            options=property_names,
+            index=property_names.index(st.session_state.selected_property_name_history) if st.session_state.selected_property_name_history in property_names else 0,
+            key="property_selector_history",
+            help="Select which property to view mortgages for"
+        )
     
     # Update session state
-    st.session_state.selected_mortgage_name = selected_mortgage_name
+    st.session_state.selected_property_name_history = selected_property_name
     
-    # Ensure selected_mortgage_name is not None
-    if not selected_mortgage_name:
-        st.error("❌ No mortgage selected. Please select a mortgage from the dropdown.")
+    # Get the selected property
+    selected_property = property_map.get(selected_property_name)
+    
+    if not selected_property:
+        st.error("❌ Selected property not found. Please refresh the page.")
         return
     
+    # Get mortgages for the selected property
+    property_mortgages = selected_property.get('mortgages', [])
+    
+    if not property_mortgages:
+        st.warning(f"⚠️ No mortgages found for {selected_property_name}.")
+        return
+    
+    # Create mortgage dropdown for the selected property
+    mortgage_names = [m['mortgage_name'] for m in property_mortgages]
+    mortgage_map = {m['mortgage_name']: m for m in property_mortgages}
+    
+    # Initialize selected mortgage in session state
+    mortgage_session_key = f"selected_mortgage_name_{selected_property['id']}"
+    if mortgage_session_key not in st.session_state:
+        st.session_state[mortgage_session_key] = mortgage_names[0]
+    
+    # Ensure the selected mortgage is still valid for this property
+    if st.session_state[mortgage_session_key] not in mortgage_names:
+        st.session_state[mortgage_session_key] = mortgage_names[0]
+    
+    # Mortgage selector
+    with col2:
+        selected_mortgage_name = st.selectbox(
+            "Select Mortgage",
+            options=mortgage_names,
+            index=mortgage_names.index(st.session_state[mortgage_session_key]) if st.session_state[mortgage_session_key] in mortgage_names else 0,
+            key=f"mortgage_selector_history_{selected_property['id']}",
+            help="Select which mortgage to view the amortization schedule for"
+        )
+    
+    # Update session state
+    st.session_state[mortgage_session_key] = selected_mortgage_name
+    
     # Get the selected mortgage details
-    selected_mortgage = db.get_mortgage_by_name(selected_mortgage_name)
+    selected_mortgage = mortgage_map.get(selected_mortgage_name)
     
     if not selected_mortgage:
         st.error("❌ Selected mortgage not found. Please refresh the page.")
@@ -97,6 +139,7 @@ def render_mortgage_amortization_tab(db):
             )
     
     # Get values from selected mortgage
+    mortgage_name = selected_mortgage["mortgage_name"]
     lender_name = selected_mortgage["lender_name"]
     loan_amount = float(selected_mortgage["loan_amount"])
     interest_rate = float(selected_mortgage["interest_rate"])
@@ -106,6 +149,9 @@ def render_mortgage_amortization_tab(db):
     defer_months = int(selected_mortgage.get("defer_months", 0))
     recurring_extra_payment = float(selected_mortgage["recurring_extra_payment"])
     currency = selected_mortgage.get("currency", "EUR")
+    
+    # Property information is already available from selected_property
+    property_info = selected_property
     
     schedule_df, summary = generate_amortization_schedule(
         loan_amount=loan_amount,
@@ -118,35 +164,77 @@ def render_mortgage_amortization_tab(db):
         custom_extra_payments=st.session_state[session_key]
     )
 
+    # Property Summary Section (moved from Settings)
+    st.markdown("#### 📊 Property Summary")
+    
+    # Get latest property asset value
+    latest_asset = db.get_latest_property_asset(property_info['id'])
+    if latest_asset:
+        present_val = float(latest_asset['market_value'])
+        valuation_date = latest_asset['valuation_date']
+        valuation_type = latest_asset['valuation_type']
+        
+        # Get purchase price
+        all_assets = db.get_property_assets(property_info['id'])
+        purchase_asset = next((a for a in all_assets if a['valuation_type'] == 'Purchase Price'), None)
+        purchase_val = float(purchase_asset['market_value']) if purchase_asset else 0.0
+        
+        # Calculate total mortgage debt for this property
+        total_debt = 0.0
+        from helper import get_all_mortgage_balances
+        all_mortgage_balances = get_all_mortgage_balances(db)
+        for mort in property_mortgages:
+            if mort.get('id'):
+                mortgage_balance = next((m for m in all_mortgage_balances if m['mortgage_id'] == mort['id']), None)
+                if mortgage_balance:
+                    total_debt += mortgage_balance['balance']
+        
+        equity = present_val - total_debt
+        equity_percentage = (equity / present_val * 100) if present_val > 0 else 0
+        
+        sum_col1, sum_col2, sum_col3 = st.columns(3)
+        
+        with sum_col1:
+            st.metric("Market Value", format_currency(present_val, currency), help=f"{valuation_type} as of {valuation_date}")
+        
+        with sum_col2:
+            st.metric("Total Debt", format_currency(total_debt, currency))
+        
+        with sum_col3:
+            st.metric("Equity", format_currency(equity, currency), delta=f"{equity_percentage:.1f}%")
+    else:
+        st.info("No property valuation data available.")
+    
+    st.divider()
+
     with st.expander("📋 View Mortgage Configuration", expanded=False):
+        # Show property information
+        st.markdown(f"**🏘️ Property:** {property_info['property_name']}")
+        if property_info.get('address'):
+            st.markdown(f"**📍 Address:** {property_info['address']}")
+        st.markdown(f"**👤 Owner:** {property_info['owner']}")
+        st.divider()
+        
         config_col1, config_col2, config_col3 = st.columns(3)
         
         with config_col1:
-            st.write("**Loan Amount:**", format_currency(loan_amount))
-            st.write("**Interest Rate:**", f"{interest_rate:.4f}%")
-            st.write("**Loan Term:**", f"{loan_term_years:.3f} years")
+            st.write("**Mortgage Name:**", mortgage_name)
+            st.write("**Lender:**", lender_name)
+            st.write("**Loan Amount:**", format_currency(loan_amount, currency))
 
         with config_col2:
-            st.write("**Currency:**", currency)
+            st.write("**Interest Rate:**", f"{interest_rate:.4f}%")
+            st.write("**Loan Term:**", f"{loan_term_years:.3f} years")
             st.write("**Payments Per Year:**", payments_per_year)
-            st.write("**Start Date:**", loan_start_date.strftime("%d/%m/%Y"))
         
         with config_col3:
+            st.write("**Start Date:**", loan_start_date.strftime("%d/%m/%Y"))
             st.write("**Deferred Months:**", defer_months)
-            st.write("**Recurring Extra Payment:**", format_currency(recurring_extra_payment))
-        
-        st.divider()
-        
-        # Property value information
-        purchase_val = float(selected_mortgage.get("purchase_value", 0.0))
-        present_val = float(selected_mortgage.get("present_value", 0.0))
-        down_payment = purchase_val - loan_amount
-        
-        prop_col1, prop_col2, prop_col3 = st.columns(3)
+            if recurring_extra_payment > 0:
+                st.write("**Recurring Extra Payment:**", format_currency(recurring_extra_payment, currency))
 
-        prop_col1.metric("Purchase Value", format_currency(purchase_val))
-        prop_col2.metric("Down Payment", format_currency(down_payment))        
-        prop_col3.metric("Present Market Value", format_currency(present_val))
+        st.divider()
+        st.markdown("#### 📈 Amortization Summary")
 
         metric_col_1, metric_col_2, metric_col_3 = st.columns(3)
         metric_col_4, metric_col_5, metric_col_6 = st.columns(3)
@@ -182,9 +270,9 @@ def render_mortgage_amortization_tab(db):
     schedule_df_for_csv.to_csv(csv_buffer, index=False)
 
     st.download_button(
-        label=f"Download {selected_mortgage_name}_Amortization_Schedule.csv",
+        label=f"Download {mortgage_name}_Amortization_Schedule.csv",
         data=csv_buffer.getvalue(),
-        file_name=f"{selected_mortgage_name.replace(' ', '_')}_Amortization_Schedule.csv",
+        file_name=f"{mortgage_name.replace(' ', '_')}_Amortization_Schedule.csv",
         mime="text/csv",
         type="primary"
     )
@@ -360,8 +448,41 @@ def render_yearly_snapshots_tab(db):
                 # Get exchange rates
                 rates = json.loads(snapshots[0]["exchange_rates"]) if snapshots[0].get("exchange_rates") else {}
 
-                # Calculate total net worth
+                # Fetch commodity prices if there are commodity accounts
+                commodity_accounts = [s for s in snapshots if s.get("account_type") == "Commodity"]
+                commodity_prices = {}
+                commodity_configs = {}
+                
+                if commodity_accounts and rates:
+                    # Get snapshot date and unique commodities
+                    snapshot_date_str = snapshots[0].get("snapshot_date")
+                    commodity_list = [s.get("commodity") for s in commodity_accounts if s.get("commodity")]
+                    unique_commodities = list(set([c for c in commodity_list if c is not None]))
+                    
+                    # Get enabled currencies from database
+                    enabled_currencies = db.get_currency_codes()
+                    
+                    # Fetch commodity prices for the snapshot date (prices are per troy ounce)
+                    if unique_commodities:
+                        commodity_prices = CurrencyConverter.get_commodity_prices(
+                            unique_commodities,
+                            enabled_currencies,
+                            date=snapshot_date_str
+                        ) or {}
+                        
+                        # Get commodity configurations to know the units
+                        commodity_configs = {c['name']: c for c in db.get_commodities()}
+
+                # Calculate total net worth including property equity
+                # First calculate account balances
                 total = calculate_total_net_worth(snapshots, base_currency, db)
+                
+                # Add property equity (assets - liabilities)
+                from helper import calculate_total_property_assets, calculate_total_property_liabilities
+                property_assets = calculate_total_property_assets(db, base_currency, rates)
+                property_liabilities = calculate_total_property_liabilities(db, base_currency, rates)
+                property_equity = property_assets - property_liabilities
+                total += property_equity
 
                 # Create accordion with month name and total net worth in title
                 # Using markdown formatting to preserve the code-style appearance of the amount
@@ -384,17 +505,14 @@ def render_yearly_snapshots_tab(db):
                             log_entries.append(f"  **{owner_name}:**")
 
                             for snapshot in owner_snapshots:
-                                converted_value = get_converted_value(
-                                    snapshot["balance"],
-                                    snapshot["currency"],
-                                    base_currency,
-                                    rates
-                                )
-
                                 # Check if this is a commodity account
                                 is_commodity = snapshot["account_type"] == "Commodity"
                                 
                                 if is_commodity:
+                                    # For commodities, calculate value using the commodity function
+                                    commodity_name = snapshot.get("commodity")
+                                    quantity = snapshot["balance"]
+                                    
                                     # Get unit from snapshot (from database join) or extract from account name as fallback
                                     unit = snapshot.get("commodity_unit")
                                     if not unit:
@@ -404,22 +522,43 @@ def render_yearly_snapshots_tab(db):
                                         if "(" in account_name and ")" in account_name:
                                             unit = account_name[account_name.rfind("(")+1:account_name.rfind(")")]
                                     
-                                    # Show balance with unit instead of currency symbol
-                                    commodity_name = snapshot.get("commodity", snapshot["currency"])
+                                    # Calculate commodity value in base currency using commodity function
+                                    from helper import get_commodity_value
+                                    converted_value = get_commodity_value(
+                                        quantity,
+                                        commodity_name,
+                                        base_currency,
+                                        commodity_prices,
+                                        commodity_configs,
+                                        unit
+                                    )
+                                    
+                                    # Show balance with unit
                                     entry = (
                                         f"    • {snapshot['name']} ({snapshot['account_type']}): "
                                         f"`{snapshot['balance']:,.2f} {unit}` {commodity_name}"
                                     )
+                                    
+                                    # Always show converted value for commodities
+                                    entry += f" = `{currency_symbol}{converted_value:,.2f}` {base_currency}"
                                 else:
-                                    # For regular accounts, show currency symbol
+                                    # For regular accounts, use currency conversion
+                                    converted_value = get_converted_value(
+                                        snapshot["balance"],
+                                        snapshot["currency"],
+                                        base_currency,
+                                        rates
+                                    )
+                                    
+                                    # Show currency symbol
                                     acc_symbol = get_currency_symbol(snapshot['currency'])
                                     entry = (
                                         f"    • {snapshot['name']} ({snapshot['account_type']}): "
                                         f"`{acc_symbol}{snapshot['balance']:,.2f}` {snapshot['currency']}"
                                     )
-                                
-                                if snapshot['currency'] != base_currency:
-                                    entry += f" = `{currency_symbol}{converted_value:,.2f}` {base_currency}"
+                                    
+                                    if snapshot['currency'] != base_currency:
+                                        entry += f" = `{currency_symbol}{converted_value:,.2f}` {base_currency}"
 
                                 log_entries.append(entry)
 
@@ -471,7 +610,7 @@ def history(db):
     """, unsafe_allow_html=True)
     
     # Create tabs
-    tab1, tab2, tab3 = st.tabs(["📊 Recent History", "📅 Yearly View", "🏠 Mortgage"])
+    tab1, tab2, tab3 = st.tabs(["📊 Recent History", "📅 Yearly View", "🏠 Properties"])
     
     with tab1:
         render_balance_history_tab(db)

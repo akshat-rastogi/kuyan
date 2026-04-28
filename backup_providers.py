@@ -1,6 +1,5 @@
 """
 KUYAN - Backup Providers Module
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 
 This module provides abstraction for multiple cloud backup providers.

@@ -1,7 +1,6 @@
 """
 KUYAN - Monthly Net Worth Tracker
 Currencies Page Module - Manages currency settings
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 """
 

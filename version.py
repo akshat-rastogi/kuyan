@@ -1,6 +1,5 @@
 """
 KUYAN - Version Management
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 """
 from pathlib import Path

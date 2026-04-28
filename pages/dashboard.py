@@ -1,6 +1,5 @@
 """
 KUYAN - Dashboard Page Module
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 """
 
@@ -18,9 +17,13 @@ from helper import (
     get_converted_account_value,
     calculate_total_net_worth,
     get_current_mortgage_balance,
+    get_all_mortgage_balances,
     get_theme_colors,
     generate_amortization_schedule,
-    format_currency
+    format_currency,
+    get_property_equity_data,
+    calculate_total_property_assets,
+    calculate_total_property_liabilities
 )
 
 
@@ -51,64 +54,43 @@ def dashboard(db):
     for currency in enabled_currencies:
         net_worths[currency['code']] = calculate_total_net_worth(latest_snapshots, currency['code'], db)
 
-    # Get current mortgage balance (debt) and its currency
-    mortgage_balance, mortgage_currency = get_current_mortgage_balance(db)
+    # Get all mortgage balances
+    all_mortgage_balances = get_all_mortgage_balances(db)
     
-    # Display Total Debt section if there is a mortgage
-    if mortgage_balance > 0:
-        st.subheader("Total Debt")
-        
-        # Get theme colors for metric cards
-        colors = get_theme_colors()
-        
-        # Display debt in all enabled currencies
-        debt_rows = []
-        num_currencies = len(enabled_currencies)
-        
-        if num_currencies <= 4:
-            debt_rows = [enabled_currencies]
-        elif num_currencies <= 6:
-            mid = (num_currencies + 1) // 2
-            debt_rows = [enabled_currencies[:mid], enabled_currencies[mid:]]
-        else:
-            third = (num_currencies + 2) // 3
-            debt_rows = [
-                enabled_currencies[:third],
-                enabled_currencies[third:third*2],
-                enabled_currencies[third*2:]
-            ]
-        
+    # Calculate total debt across all mortgages
+    total_debt_by_currency = {}
+    
+    if all_mortgage_balances:
         # Get exchange rates for currency conversion
         rates = json.loads(latest_snapshots[0]["exchange_rates"]) if latest_snapshots[0].get("exchange_rates") else {}
         
-        for row_currencies in debt_rows:
-            cols = st.columns(len(row_currencies))
-            
-            for idx, currency in enumerate(row_currencies):
-                with cols[idx]:
-                    curr_symbol = get_currency_symbol(currency['code'])
-                    # Convert mortgage balance from its currency to target currency
-                    debt_in_currency = get_converted_value(mortgage_balance, mortgage_currency, currency['code'], rates)
-                    
-                    st.markdown(f"""
-                    <div style="background-color: {colors['bg_secondary']}; padding: 20px; border-radius: 10px; border-left: 5px solid #dc3545;">
-                        <p style="margin: 0; font-size: 14px; color: {colors['text_secondary']};">{currency['flag_emoji']} {currency['code']}</p>
-                        <p style="margin: 0; font-size: 28px; font-weight: bold; color: #dc3545;">{curr_symbol}{debt_in_currency:,.2f}</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            if row_currencies != debt_rows[-1]:
-                st.write("")
-        
-        st.divider()
+        # Calculate total debt in each enabled currency
+        for currency in enabled_currencies:
+            total_debt = 0.0
+            for mortgage in all_mortgage_balances:
+                # Convert each mortgage balance to the target currency
+                converted_balance = get_converted_value(
+                    mortgage["balance"],
+                    mortgage["currency"],
+                    currency['code'],
+                    rates
+                )
+                total_debt += converted_balance
+            total_debt_by_currency[currency['code']] = total_debt
+    
+    # Get theme colors for metric cards (used in multiple sections)
+    colors = get_theme_colors()
     
     # Add filter for account types to exclude
     # Get all unique account types from latest snapshots
     all_account_types = sorted(list(set([s["account_type"] for s in latest_snapshots])))
     
+    # Add "Property" as a special filter option
+    all_filter_options = all_account_types + ["Property"]
+    
     # Create a multiselect for excluding account types
-    # Default to excluding "Pension" if it exists in the account types
-    default_excluded = ["Pension"] if "Pension" in all_account_types else []
+    # Default to excluding "Property" and "Pension"
+    default_excluded = ["Property", "Pension"]  # Property and Pension excluded by default
     
     col_filter1, col_filter2 = st.columns([2, 2])
     with col_filter1:
@@ -118,21 +100,35 @@ def dashboard(db):
     with col_filter2:
         excluded_types = st.multiselect(
             "Exclude Account Types from Net Worth:",
-            options=all_account_types,
+            options=all_filter_options,
             default=default_excluded,
             key="excluded_account_types",
-            help="Select account types to exclude from net worth calculations"
+            help="Select account types to exclude from net worth calculations. Property equity and Pension are excluded by default."
         )
+    
+    # Check if Property should be included in net worth
+    include_property_equity = "Property" not in excluded_types
+    
+    # Get exchange rates for property equity calculations
+    rates = json.loads(latest_snapshots[0]["exchange_rates"]) if latest_snapshots[0].get("exchange_rates") else {}
     
     # Recalculate net worths with excluded account types
     net_worths = {}
     for currency in enabled_currencies:
-        net_worths[currency['code']] = calculate_total_net_worth(
+        net_worth = calculate_total_net_worth(
             latest_snapshots,
             currency['code'],
             db,
             excluded_account_types=excluded_types
         )
+        
+        # Add property equity if not excluded
+        if include_property_equity:
+            property_equity = calculate_total_property_assets(db, currency['code'], rates) - \
+                            calculate_total_property_liabilities(db, currency['code'], rates)
+            net_worth += property_equity
+        
+        net_worths[currency['code']] = net_worth
 
     # Get theme colors for metric cards
     colors = get_theme_colors()
@@ -180,10 +176,59 @@ def dashboard(db):
 
     st.divider()
 
+    # Display Total Debt section if there are any mortgages
+    if all_mortgage_balances and any(m["balance"] > 0 for m in all_mortgage_balances):
+        st.subheader("Total Debt")
+        
+        # Display debt in all enabled currencies
+        debt_rows = []
+        num_currencies = len(enabled_currencies)
+        
+        if num_currencies <= 4:
+            debt_rows = [enabled_currencies]
+        elif num_currencies <= 6:
+            mid = (num_currencies + 1) // 2
+            debt_rows = [enabled_currencies[:mid], enabled_currencies[mid:]]
+        else:
+            third = (num_currencies + 2) // 3
+            debt_rows = [
+                enabled_currencies[:third],
+                enabled_currencies[third:third*2],
+                enabled_currencies[third*2:]
+            ]
+        
+        for row_currencies in debt_rows:
+            cols = st.columns(len(row_currencies))
+            
+            for idx, currency in enumerate(row_currencies):
+                with cols[idx]:
+                    curr_symbol = get_currency_symbol(currency['code'])
+                    debt_in_currency = total_debt_by_currency.get(currency['code'], 0.0)
+                    
+                    st.markdown(f"""
+                    <div style="background-color: {colors['bg_secondary']}; padding: 20px; border-radius: 10px; border-left: 5px solid #dc3545;">
+                        <p style="margin: 0; font-size: 14px; color: {colors['text_secondary']};">{currency['flag_emoji']} {currency['code']}</p>
+                        <p style="margin: 0; font-size: 28px; font-weight: bold; color: #dc3545;">{curr_symbol}{debt_in_currency:,.2f}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            if row_currencies != debt_rows[-1]:
+                st.write("")
+        
+        # Show breakdown of individual mortgages in an expander
+        if len(all_mortgage_balances) > 1:
+            st.write("")
+            with st.expander(f"📋 Mortgage Breakdown ({len(all_mortgage_balances)} mortgages)", expanded=False):
+                for mortgage in all_mortgage_balances:
+                    mortgage_symbol = get_currency_symbol(mortgage["currency"])
+                    st.markdown(f"**{mortgage['mortgage_name']}**: {mortgage_symbol}{mortgage['balance']:,.2f} {mortgage['currency']}")
+        
+        st.divider()
+
     # Account breakdown table
     col_header, col_currency = st.columns([2, 2])
     with col_header:
-        st.subheader("Account Breakdown 4")
+        st.subheader("Account Breakdown")
         st.caption("Currency conversions use exchange rates from the 1st of the snapshot month")
     with col_currency:
         base_currency = render_currency_selector(
@@ -707,169 +752,154 @@ def dashboard(db):
                 st.plotly_chart(fig_type, use_container_width=True)
 
     st.divider()
+
+    # Property Assets & Liabilities Section
+    property_equity_data = get_property_equity_data(db)
     
-    # House Ownership Chart (if mortgage config exists)
-    # Initialize mortgage configuration if not present in session state
-    if "mortgage_config" not in st.session_state:
-        # Try to load from database
-        db_settings = db.get_mortgage_settings()
-        if db_settings:
-            st.session_state.mortgage_config = {
-                "lender_name": db_settings["lender_name"],
-                "loan_amount": float(db_settings["loan_amount"]),
-                "interest_rate": float(db_settings["interest_rate"]),
-                "loan_term_years": float(db_settings["loan_term_years"]),
-                "payments_per_year": int(db_settings["payments_per_year"]),
-                "start_date": date.fromisoformat(db_settings["start_date"]),
-                "recurring_extra_payment": float(db_settings["recurring_extra_payment"]),
-                "purchase_value": float(db_settings["purchase_value"]),
-                "present_value": float(db_settings["present_value"])
-            }
-    
-    if "mortgage_config" in st.session_state:
-        mortgage_config = st.session_state.mortgage_config
+    if property_equity_data:
+        st.subheader("🏘️ Property Assets & Liabilities")
         
-        # Check if we have the necessary mortgage data
-        if (mortgage_config.get("loan_amount", 0) > 0 and
-            mortgage_config.get("present_value", 0) > 0):
-            
-            st.markdown("#### House Ownership Overview")
-            
-            # Calculate ownership metrics
-            present_value = mortgage_config.get("present_value", 0)
-            purchase_value = mortgage_config.get("purchase_value", 0)
-            
-            # Calculate current mortgage balance from schedule (nearest date)
-            try:
-                # Get mortgage settings from database
-                mortgage_settings = db.get_mortgage_settings()
-                if mortgage_settings:
-                    # Get extra payments from database
-                    extra_payments_data = db.get_mortgage_extra_payments()
-                    custom_extra_payments = pd.DataFrame(extra_payments_data) if extra_payments_data else pd.DataFrame()
-                    if not custom_extra_payments.empty:
-                        custom_extra_payments = custom_extra_payments.rename(columns={
-                            'payment_number': 'PMT NO',
-                            'extra_payment_amount': 'EXTRA PAYMENT'
-                        })
+        # Calculate totals across all properties
+        total_property_assets = sum(p['market_value'] for p in property_equity_data)
+        total_property_liabilities = sum(p['total_debt'] for p in property_equity_data)
+        total_equity = total_property_assets - total_property_liabilities
+        
+        # Display summary metrics
+        prop_col1, prop_col2, prop_col3 = st.columns(3)
+        
+        with prop_col1:
+            st.markdown(f"""
+            <div style="background-color: {colors['bg_secondary']}; padding: 20px; border-radius: 10px; border-left: 5px solid #28a745;">
+                <p style="margin: 0; font-size: 14px; color: {colors['text_secondary']};">Total Property Assets</p>
+                <p style="margin: 0; font-size: 28px; font-weight: bold; color: #28a745;">{get_currency_symbol(base_currency)}{total_property_assets:,.2f}</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with prop_col2:
+            st.markdown(f"""
+            <div style="background-color: {colors['bg_secondary']}; padding: 20px; border-radius: 10px; border-left: 5px solid #dc3545;">
+                <p style="margin: 0; font-size: 14px; color: {colors['text_secondary']};">Total Property Liabilities</p>
+                <p style="margin: 0; font-size: 28px; font-weight: bold; color: #dc3545;">{get_currency_symbol(base_currency)}{total_property_liabilities:,.2f}</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with prop_col3:
+            equity_color = "#28a745" if total_equity >= 0 else "#dc3545"
+            st.markdown(f"""
+            <div style="background-color: {colors['bg_secondary']}; padding: 20px; border-radius: 10px; border-left: 5px solid {equity_color};">
+                <p style="margin: 0; font-size: 14px; color: {colors['text_secondary']};">Total Equity</p>
+                <p style="margin: 0; font-size: 28px; font-weight: bold; color: {equity_color};">{get_currency_symbol(base_currency)}{total_equity:,.2f}</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.write("")
+        
+        # Display individual property details in an expander
+        with st.expander(f"📋 Property Details ({len(property_equity_data)} properties)", expanded=False):
+            for prop in property_equity_data:
+                st.markdown(f"### {prop['property_name']}")
+                
+                detail_col1, detail_col2, detail_col3, detail_col4 = st.columns(4)
+                
+                with detail_col1:
+                    st.metric("Type", prop['property_type'])
+                    st.metric("Owner", prop['owner'])
+                
+                with detail_col2:
+                    st.metric("Market Value", format_currency(prop['market_value'], prop['currency']))
+                    if prop['valuation_date']:
+                        st.caption(f"As of {prop['valuation_date']}")
+                
+                with detail_col3:
+                    st.metric("Total Debt", format_currency(prop['total_debt'], prop['currency']))
+                    if prop['linked_mortgages']:
+                        st.caption(f"{len(prop['linked_mortgages'])} mortgage(s)")
+                
+                with detail_col4:
+                    equity_delta = f"{prop['equity_percentage']:.1f}%" if prop['market_value'] > 0 else "N/A"
+                    st.metric("Equity", format_currency(prop['equity'], prop['currency']), delta=equity_delta)
+                
+                # Show linked mortgages
+                if prop['linked_mortgages']:
+                    st.markdown("**Linked Mortgages:**")
+                    for mortgage in prop['linked_mortgages']:
+                        mortgage_symbol = get_currency_symbol(mortgage['currency'])
+                        st.markdown(f"- {mortgage['name']}: {mortgage_symbol}{mortgage['balance']:,.2f}")
+                
+                # Add ownership split chart for this property
+                st.markdown("**Ownership Split:**")
+                chart_col1, chart_col2 = st.columns([1, 1])
+                
+                with chart_col1:
+                    # Create donut chart for property ownership
+                    ownership_data = pd.DataFrame([
+                        {"Category": "Your Equity", "Value": prop['equity']},
+                        {"Category": "Mortgage Balance", "Value": prop['total_debt']}
+                    ])
                     
-                    # Generate amortization schedule
-                    schedule_df, _ = generate_amortization_schedule(
-                        loan_amount=mortgage_settings['loan_amount'],
-                        annual_interest_rate=mortgage_settings['interest_rate'],
-                        loan_term_years=mortgage_settings['loan_term_years'],
-                        payments_per_year=mortgage_settings['payments_per_year'],
-                        start_date=date.fromisoformat(mortgage_settings['start_date']),
-                        recurring_extra_payment=mortgage_settings.get('recurring_extra_payment', 0.0),
-                        custom_extra_payments=custom_extra_payments
+                    fig_ownership = px.pie(
+                        ownership_data,
+                        values="Value",
+                        names="Category",
+                        title=f"Ownership Split",
+                        hole=0.5,
+                        color="Category",
+                        color_discrete_map={
+                            "Your Equity": "#10b981",
+                            "Mortgage Balance": "#ef4444"
+                        }
                     )
                     
-                    # Find the payment that has occurred most recently (on or before today)
-                    today = date.today()
-                    # Filter to only past/current payments
-                    past_payments = schedule_df[schedule_df['PAYMENT DATE'] <= today]
+                    currency_symbol = get_currency_symbol(prop['currency'])
+                    fig_ownership.update_traces(
+                        textposition='inside',
+                        textinfo='percent',
+                        hovertemplate=f'<b>%{{label}}</b><br>Value: {currency_symbol}%{{value:,.2f}}<br>Percentage: %{{percent}}<extra></extra>',
+                        textfont_size=16
+                    )
                     
-                    if not past_payments.empty:
-                        # Use the most recent past payment's ending balance
-                        loan_amount = past_payments.iloc[-1]['ENDING BALANCE']
-                    else:
-                        # If no payments have been made yet, use the original loan amount
-                        loan_amount = mortgage_settings['loan_amount']
-                else:
-                    # Fallback to initial loan amount if no settings found
-                    loan_amount = mortgage_config.get("loan_amount", 0)
-            except Exception as e:
-                # Fallback to initial loan amount on any error
-                # Print error for debugging
-                import traceback
-                print(f"Error calculating mortgage balance: {e}")
-                print(traceback.format_exc())
-                loan_amount = mortgage_config.get("loan_amount", 0)
-            
-            # Calculate equity (what you own)
-            equity = present_value - loan_amount
-            equity_percentage = (equity / present_value * 100) if present_value > 0 else 0
-            mortgage_percentage = (loan_amount / present_value * 100) if present_value > 0 else 0
-            
-            # Create three columns for metrics and chart
-            ownership_col1, ownership_col2, ownership_col3 = st.columns([1, 1, 2])
-            
-            with ownership_col1:
-                st.metric("Present Value", format_currency(present_value))
-                st.metric("Purchase Value", format_currency(purchase_value))
-            
-            with ownership_col2:
-                st.metric("Your Equity", format_currency(equity))
-                st.metric("Mortgage Balance", format_currency(loan_amount))
-            
-            with ownership_col3:
-                # Create donut chart showing ownership split
-                ownership_data = pd.DataFrame([
-                    {"Category": "Your Equity", "Value": equity},
-                    {"Category": "Mortgage Balance", "Value": loan_amount}
-                ])
+                    fig_ownership.update_layout(
+                        plot_bgcolor=colors['plot_bg'],
+                        paper_bgcolor=colors['plot_bg'],
+                        font=dict(color=colors['plot_text']),
+                        title_font=dict(color=colors['text_primary'], size=16),
+                        hoverlabel=dict(
+                            bgcolor=colors['surface'],
+                            font_size=13,
+                            font_family="Arial, sans-serif",
+                            font_color=colors['text_primary']
+                        ),
+                        showlegend=True,
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=-0.2,
+                            xanchor="center",
+                            x=0.5,
+                            bgcolor=colors['surface'],
+                            bordercolor=colors['border'],
+                            borderwidth=1,
+                            font=dict(color=colors['text_primary'])
+                        ),
+                        annotations=[
+                            dict(
+                                text=f"{prop['equity_percentage']:.1f}%<br>Owned",
+                                x=0.5, y=0.5,
+                                font_size=20,
+                                font_color=colors['text_primary'],
+                                showarrow=False
+                            )
+                        ]
+                    )
+                    
+                    st.plotly_chart(fig_ownership, use_container_width=True)
                 
-                fig_ownership = px.pie(
-                    ownership_data,
-                    values="Value",
-                    names="Category",
-                    title=f"Ownership Split",
-                    hole=0.5,  # Makes it a donut chart
-                    color="Category",
-                    color_discrete_map={
-                        "Your Equity": "#10b981",  # Green for equity
-                        "Mortgage Balance": "#ef4444"  # Red for mortgage
-                    }
-                )
+                with chart_col2:
+                    st.write("")  # Empty column for spacing
                 
-                fig_ownership.update_traces(
-                    textposition='inside',
-                    textinfo='percent',
-                    hovertemplate='<b>%{label}</b><br>Value: €%{value:,.2f}<br>Percentage: %{percent}<extra></extra>',
-                    textfont_size=16
-                )
-                
-                # Get theme colors
-                colors = get_theme_colors()
-                
-                fig_ownership.update_layout(
-                    plot_bgcolor=colors['plot_bg'],
-                    paper_bgcolor=colors['plot_bg'],
-                    font=dict(color=colors['plot_text']),
-                    title_font=dict(color=colors['text_primary'], size=16),
-                    hoverlabel=dict(
-                        bgcolor=colors['surface'],
-                        font_size=13,
-                        font_family="Arial, sans-serif",
-                        font_color=colors['text_primary']
-                    ),
-                    showlegend=True,
-                    legend=dict(
-                        orientation="h",
-                        yanchor="bottom",
-                        y=-0.2,
-                        xanchor="center",
-                        x=0.5,
-                        bgcolor=colors['surface'],
-                        bordercolor=colors['border'],
-                        borderwidth=1,
-                        font=dict(color=colors['text_primary'])
-                    ),
-                    annotations=[
-                        dict(
-                            text=f"{equity_percentage:.1f}%<br>Owned",
-                            x=0.5, y=0.5,
-                            font_size=20,
-                            font_color=colors['text_primary'],
-                            showarrow=False
-                        )
-                    ]
-                )
-                
-                st.plotly_chart(fig_ownership, use_container_width=True)
-            
-            st.caption("💡 Based on present market value and current mortgage balance from Settings → Mortgage")
-            st.divider()
+                st.divider()
+        
+        st.divider()
 
     # Year-over-year comparison if we have enough data
     if len(snapshot_dates) >= 12:

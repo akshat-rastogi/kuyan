@@ -1,7 +1,6 @@
 """
 KUYAN - Monthly Net Worth Tracker
 Helper Functions Module - Common utility functions used across the application
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 """
 
@@ -388,7 +387,7 @@ def inject_custom_css():
     """, unsafe_allow_html=True)
 
 
-def calculate_total_net_worth(snapshots, base_currency, db, excluded_account_types=None):
+def calculate_total_net_worth(snapshots, base_currency, db, excluded_account_types=None, include_mortgage_debt=False):
     """Calculate total net worth from snapshots in base currency
     
     Args:
@@ -396,9 +395,10 @@ def calculate_total_net_worth(snapshots, base_currency, db, excluded_account_typ
         base_currency: Target currency for conversion
         db: Database instance
         excluded_account_types: Optional list of account types to exclude from calculation
+        include_mortgage_debt: If True, subtract mortgage debt from net worth
     
     Returns:
-        float: Total net worth in base currency
+        float: Total net worth in base currency (assets minus mortgage debt if include_mortgage_debt=True)
     """
     if not snapshots:
         return 0.0
@@ -484,73 +484,116 @@ def calculate_total_net_worth(snapshots, base_currency, db, excluded_account_typ
             commodity_configs
         )
         total += converted
+    
+    # Subtract mortgage debt if requested
+    if include_mortgage_debt:
+        all_mortgage_balances = get_all_mortgage_balances(db)
+        for mortgage in all_mortgage_balances:
+            # Convert mortgage balance to base currency and subtract
+            if rates:
+                mortgage_in_base = get_converted_value(
+                    mortgage["balance"],
+                    mortgage["currency"],
+                    base_currency,
+                    rates
+                )
+                total -= mortgage_in_base
 
     return total
 
 
 def get_current_mortgage_balance(db):
-    """Get the current remaining mortgage balance and its currency
+    """Get the current remaining mortgage balance and its currency (backward compatible)
     
     Returns:
         tuple: (balance, currency) where balance is float and currency is str
+        Returns the first mortgage's balance for backward compatibility
     """
-    # Get mortgage settings
-    db_settings = db.get_mortgage_settings()
-    if not db_settings:
+    all_balances = get_all_mortgage_balances(db)
+    if not all_balances:
         return 0.0, "EUR"
+    return all_balances[0]["balance"], all_balances[0]["currency"]
+
+
+def get_all_mortgage_balances(db):
+    """Get current remaining balances for all mortgages
     
-    # Get mortgage configuration
-    loan_amount = float(db_settings["loan_amount"])
-    interest_rate = float(db_settings["interest_rate"])
-    loan_term_years = float(db_settings["loan_term_years"])
-    payments_per_year = int(db_settings["payments_per_year"])
-    start_date = date.fromisoformat(db_settings["start_date"])
-    defer_months = int(db_settings.get("defer_months", 0))
-    recurring_extra_payment = float(db_settings["recurring_extra_payment"])
-    currency = db_settings.get("currency", "EUR")
+    Returns:
+        list: List of dicts with keys: mortgage_id, mortgage_name, balance, currency
+    """
+    # Get all mortgages
+    all_mortgages = db.get_all_mortgages()
+    if not all_mortgages:
+        return []
     
-    # Get extra payments
-    db_payments = db.get_mortgage_extra_payments()
-    if db_payments:
-        payments_data = [
-            {"PMT NO": int(p["payment_number"]), "EXTRA PAYMENT": float(p["extra_payment_amount"])}
-            for p in db_payments
-        ]
-        custom_payments = pd.DataFrame(payments_data)
-    else:
-        custom_payments = pd.DataFrame({"PMT NO": [], "EXTRA PAYMENT": []})
+    mortgage_balances = []
     
-    # Generate amortization schedule
-    schedule_df, _ = generate_amortization_schedule(
-        loan_amount=loan_amount,
-        annual_interest_rate=interest_rate,
-        loan_term_years=loan_term_years,
-        payments_per_year=payments_per_year,
-        start_date=start_date,
-        defer_months=defer_months,
-        recurring_extra_payment=recurring_extra_payment,
-        custom_extra_payments=custom_payments
-    )
+    for mortgage in all_mortgages:
+        mortgage_id = mortgage["id"]
+        mortgage_name = mortgage["mortgage_name"]
+        
+        # Get mortgage configuration
+        loan_amount = float(mortgage["loan_amount"])
+        interest_rate = float(mortgage["interest_rate"])
+        loan_term_years = float(mortgage["loan_term_years"])
+        payments_per_year = int(mortgage["payments_per_year"])
+        start_date = date.fromisoformat(mortgage["start_date"]) if isinstance(mortgage["start_date"], str) else mortgage["start_date"]
+        defer_months = int(mortgage.get("defer_months", 0))
+        recurring_extra_payment = float(mortgage["recurring_extra_payment"])
+        currency = mortgage.get("currency", "EUR")
+        
+        # Get extra payments for this specific mortgage
+        db_payments = db.get_mortgage_extra_payments(mortgage_id)
+        if db_payments:
+            payments_data = [
+                {"PMT NO": int(p["payment_number"]), "EXTRA PAYMENT": float(p["extra_payment_amount"])}
+                for p in db_payments
+            ]
+            custom_payments = pd.DataFrame(payments_data)
+        else:
+            custom_payments = pd.DataFrame({"PMT NO": [], "EXTRA PAYMENT": []})
+        
+        # Generate amortization schedule
+        schedule_df, _ = generate_amortization_schedule(
+            loan_amount=loan_amount,
+            annual_interest_rate=interest_rate,
+            loan_term_years=loan_term_years,
+            payments_per_year=payments_per_year,
+            start_date=start_date,
+            defer_months=defer_months,
+            recurring_extra_payment=recurring_extra_payment,
+            custom_extra_payments=custom_payments
+        )
+        
+        current_balance = 0.0
+        
+        if not schedule_df.empty:
+            # Find the most recent payment that has occurred (payment date <= today)
+            from datetime import datetime
+            today = datetime.now().date()
+            schedule_df["PAYMENT DATE"] = pd.to_datetime(schedule_df["PAYMENT DATE"]).dt.date
+            
+            # Filter to payments that have already occurred
+            past_payments = schedule_df[schedule_df["PAYMENT DATE"] <= today]
+            
+            if past_payments.empty:
+                # No payments made yet, use original loan amount
+                current_balance = loan_amount
+            else:
+                # Get the ending balance from the most recent payment
+                current_balance = float(past_payments.iloc[-1]["ENDING BALANCE"])
+        else:
+            # If schedule is empty, use original loan amount
+            current_balance = loan_amount
+        
+        mortgage_balances.append({
+            "mortgage_id": mortgage_id,
+            "mortgage_name": mortgage_name,
+            "balance": current_balance,
+            "currency": currency
+        })
     
-    if schedule_df.empty:
-        return 0.0, currency
-    
-    # Find the most recent payment that has occurred (payment date <= today)
-    from datetime import datetime
-    today = datetime.now().date()
-    schedule_df["PAYMENT DATE"] = pd.to_datetime(schedule_df["PAYMENT DATE"]).dt.date
-    
-    # Filter to payments that have already occurred
-    past_payments = schedule_df[schedule_df["PAYMENT DATE"] <= today]
-    
-    if past_payments.empty:
-        # No payments made yet, return original loan amount
-        return loan_amount, currency
-    
-    # Get the ending balance from the most recent payment
-    current_balance = past_payments.iloc[-1]["ENDING BALANCE"]
-    
-    return float(current_balance), currency
+    return mortgage_balances
 
 
 def calculate_scheduled_payment(principal, annual_interest_rate, total_payments, payments_per_year):
@@ -756,3 +799,110 @@ def prepare_schedule_for_display(schedule_df, currency_code="EUR"):
     return display_df
 
 
+
+
+
+def get_property_equity_data(db):
+    """Get equity data for all properties with linked mortgages
+    
+    Returns:
+        list: List of dicts with property equity information
+    """
+    properties = db.get_all_properties_with_financials()
+    all_mortgage_balances = get_all_mortgage_balances(db)
+    
+    equity_data = []
+    
+    for prop in properties:
+        property_id = prop['id']
+        property_name = prop['property_name']
+        currency = prop['currency']
+        market_value = float(prop.get('latest_value', 0.0)) if prop.get('latest_value') else 0.0
+        
+        # Calculate total mortgage debt for this property
+        total_debt = 0.0
+        linked_mortgages = []
+        
+        for mortgage in prop.get('mortgages', []):
+            mortgage_balance = next((m for m in all_mortgage_balances if m['mortgage_id'] == mortgage['id']), None)
+            if mortgage_balance:
+                total_debt += mortgage_balance['balance']
+                linked_mortgages.append({
+                    'name': mortgage_balance['mortgage_name'],
+                    'balance': mortgage_balance['balance'],
+                    'currency': mortgage_balance['currency']
+                })
+        
+        equity = market_value - total_debt
+        equity_percentage = (equity / market_value * 100) if market_value > 0 else 0
+        
+        equity_data.append({
+            'property_id': property_id,
+            'property_name': property_name,
+            'property_type': prop.get('property_type', 'Unknown'),
+            'owner': prop.get('owner', 'Unknown'),
+            'currency': currency,
+            'market_value': market_value,
+            'total_debt': total_debt,
+            'equity': equity,
+            'equity_percentage': equity_percentage,
+            'linked_mortgages': linked_mortgages,
+            'valuation_date': prop.get('latest_valuation_date'),
+            'valuation_type': prop.get('valuation_type')
+        })
+    
+    return equity_data
+
+
+def calculate_total_property_assets(db, base_currency, rates=None):
+    """Calculate total value of all property assets in base currency
+    
+    Args:
+        db: Database instance
+        base_currency: Target currency for conversion
+        rates: Optional exchange rates dictionary
+    
+    Returns:
+        float: Total property asset value in base currency
+    """
+    properties = db.get_all_properties_with_financials()
+    total = 0.0
+    
+    for prop in properties:
+        market_value = float(prop.get('latest_value', 0.0)) if prop.get('latest_value') else 0.0
+        property_currency = prop.get('currency', 'EUR')
+        
+        if rates and property_currency != base_currency:
+            converted_value = get_converted_value(market_value, property_currency, base_currency, rates)
+            total += converted_value
+        else:
+            total += market_value
+    
+    return total
+
+
+def calculate_total_property_liabilities(db, base_currency, rates=None):
+    """Calculate total mortgage debt across all properties in base currency
+    
+    Args:
+        db: Database instance
+        base_currency: Target currency for conversion
+        rates: Optional exchange rates dictionary
+    
+    Returns:
+        float: Total property liability value in base currency
+    """
+    all_mortgage_balances = get_all_mortgage_balances(db)
+    total = 0.0
+    
+    for mortgage in all_mortgage_balances:
+        balance = mortgage['balance']
+        mortgage_currency = mortgage['currency']
+        
+        if rates and mortgage_currency != base_currency:
+            converted_balance = get_converted_value(balance, mortgage_currency, base_currency, rates)
+            total += converted_balance
+        else:
+            total += balance
+    
+    return total

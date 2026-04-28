@@ -1,7 +1,6 @@
 """
 KUYAN - Monthly Net Worth Tracker
 Accounts Page Module - Handles account management functionality
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 """
 
@@ -30,7 +29,7 @@ def accounts_settings(db: Database, key_prefix=""):
         st.subheader("Existing Accounts")
     with col_filter:
         # Account type filter dropdown aligned to the right
-        filter_options = ["All Types", "Bank", "Investment", "Commodity", "Other"]
+        filter_options = ["All Types", "Bank", "Investment", "Pension", "Commodity", "Property", "Other"]
         selected_filter = st.selectbox(
             "Filter by Type",
             filter_options,
@@ -42,6 +41,22 @@ def accounts_settings(db: Database, key_prefix=""):
     owner_names = db.get_owner_names()
     currency_codes = db.get_currency_codes()
     commodity_list = db.get_commodities()
+    property_type_options = ["Residential", "Commercial", "Land", "Investment", "Vacation", "Other"]
+    properties = db.get_all_properties()
+    property_accounts_by_name = {acc['name']: acc for acc in accounts if acc['account_type'] == "Property"}
+
+    for prop in properties:
+        if prop['property_name'] not in property_accounts_by_name:
+            accounts.append({
+                'id': f"property-{prop['id']}",
+                'name': prop['property_name'],
+                'owner': prop['owner'],
+                'account_type': "Property",
+                'currency': prop['currency'],
+                'commodity': None,
+                'unit': None,
+                'created_at': prop.get('created_at')
+            })
 
     # Apply filter if not "All Types"
     if selected_filter != "All Types":
@@ -62,7 +77,7 @@ def accounts_settings(db: Database, key_prefix=""):
             for account in accounts_by_owner[owner_name]:
                 # Create expandable section for each account
                 is_commodity = account['account_type'] == "Commodity"
-                account_icon = "🏦" if account['account_type'] == "Bank" else "📈" if account['account_type'] == "Investment" else "🏛️" if account['account_type'] == "Pension" else "🥇" if is_commodity else "💼"
+                account_icon = "🏦" if account['account_type'] == "Bank" else "📈" if account['account_type'] == "Investment" else "🏛️" if account['account_type'] == "Pension" else "🏠" if account['account_type'] == "Property" else "🥇" if is_commodity else "💼"
                 display_label = account.get('commodity', account['currency']) if is_commodity else account['currency']
                 with st.expander(f"{account_icon} {account['name']} - {display_label}", expanded=False):
                     st.write(f"**Type:** {account['account_type']}")
@@ -70,9 +85,14 @@ def accounts_settings(db: Database, key_prefix=""):
                         st.write(f"**Commodity:** {account.get('commodity', 'N/A')}")
                     else:
                         st.write(f"**Currency:** {account['currency']}")
+                    is_property = account['account_type'] == "Property"
+                    existing_property = db.get_property_by_name(account['name']) if is_property else None
+                    can_edit_account_record = isinstance(account['id'], int)
 
                     st.write("**Edit Account:**")
                     col1, col2 = st.columns(2)
+
+                    new_property_type = None
 
                     with col1:
                         # For commodity accounts, name is uneditable
@@ -99,7 +119,7 @@ def accounts_settings(db: Database, key_prefix=""):
                         )
 
                     with col2:
-                        type_options = ["Bank", "Investment", "Pension", "Commodity", "Other"]
+                        type_options = ["Bank", "Investment", "Pension", "Commodity", "Property", "Other"]
                         type_index = type_options.index(account['account_type']) if account['account_type'] in type_options else 0
                         new_type = st.selectbox(
                             "Account Type",
@@ -149,6 +169,18 @@ def accounts_settings(db: Database, key_prefix=""):
                             new_commodity = None
                             new_unit = None
 
+                            if new_type == "Property":
+                                current_property_type = existing_property['property_type'] if existing_property else "Residential"
+                                property_type_index = property_type_options.index(current_property_type) if current_property_type in property_type_options else 0
+                                new_property_type = st.selectbox(
+                                    "Property Type",
+                                    property_type_options,
+                                    index=property_type_index,
+                                    key=f"{key_prefix}property_type_{account['id']}"
+                                )
+                            else:
+                                new_property_type = None
+
                     # Update button
                     if st.button(f"💾 Update Account", key=f"{key_prefix}update_btn_{account['id']}", width="stretch"):
                         if new_type == "Commodity":
@@ -157,8 +189,38 @@ def accounts_settings(db: Database, key_prefix=""):
                             db.update_account(account['id'], auto_name, new_owner, new_type, "", new_commodity, new_unit)
                             st.success(f"Account updated!")
                             st.rerun()
-                        else:
+                        elif new_type == "Property":
                             if new_name:
+                                if can_edit_account_record:
+                                    db.update_account(account['id'], new_name, new_owner, new_type, new_currency, None, None)
+                                else:
+                                    db.add_account(new_name, new_owner, new_type, new_currency, None, None)
+
+                                if existing_property:
+                                    db.update_property(
+                                        property_id=existing_property['id'],
+                                        property_name=new_name,
+                                        property_type=new_property_type or existing_property['property_type'],
+                                        address=existing_property.get('address', ''),
+                                        owner=new_owner,
+                                        currency=new_currency
+                                    )
+                                else:
+                                    db.add_property(
+                                        property_name=new_name,
+                                        property_type=new_property_type or "Residential",
+                                        address="",
+                                        owner=new_owner,
+                                        currency=new_currency
+                                    )
+                                st.success(f"Account updated!")
+                                st.rerun()
+                            else:
+                                st.error("Please enter a property name")
+                        else:
+                            if not can_edit_account_record:
+                                st.error("This entry comes from the Properties page. Keep it as a Property account or manage it from Properties.")
+                            elif new_name:
                                 db.update_account(account['id'], new_name, new_owner, new_type, new_currency, None, None)
                                 st.success(f"Account updated!")
                                 st.rerun()
@@ -169,8 +231,19 @@ def accounts_settings(db: Database, key_prefix=""):
 
                     # Remove account button
                     if st.button(f"🗑️ Remove {account['name']}", key=f"{key_prefix}remove_btn_{account['id']}", width="stretch", type="secondary"):
-                        db.delete_account(account['id'])
-                        st.success(f"Account '{account['name']}' removed!")
+                        if is_property:
+                            # Delete property from properties table
+                            if existing_property:
+                                db.delete_property(existing_property['id'])
+                            # Delete account record if it exists
+                            if can_edit_account_record:
+                                db.delete_account(account['id'])
+                            st.success(f"Property '{account['name']}' removed successfully!")
+                        elif can_edit_account_record:
+                            db.delete_account(account['id'])
+                            st.success(f"Account '{account['name']}' removed!")
+                        else:
+                            st.error("Unable to delete this account.")
                         st.rerun()
 
             st.write("")  # Add spacing between owners
@@ -179,8 +252,9 @@ def accounts_settings(db: Database, key_prefix=""):
 
     st.divider()
 
-    # Add new account section
+    # Add new account/property section
     st.subheader("Add New Account")
+    st.caption("Choose Property as the account type to create a property with only the mandatory details.")
 
     if not owner_names:
         st.warning("Please add at least one owner first in the Owners page!")
@@ -193,10 +267,11 @@ def accounts_settings(db: Database, key_prefix=""):
         selected_commodity = None
         auto_account_name = None
         selected_commodity = None
+        property_type = "Residential"
         
         with col1:
             # Account type selector first to determine what to show
-            account_type = st.selectbox("Account Type", ["Bank", "Investment", "Pension", "Commodity", "Other"], key=f"{key_prefix}add_account_type")
+            account_type = st.selectbox("Account Type", ["Bank", "Investment", "Pension", "Commodity", "Property", "Other"], key=f"{key_prefix}add_account_type")
             owner = st.selectbox("Owner", owner_names, key=f"{key_prefix}add_account_owner")
 
         with col2:
@@ -212,9 +287,19 @@ def accounts_settings(db: Database, key_prefix=""):
                 else:
                     st.warning("No commodities available. Please add commodities first!")
                     selected_unit = None
+            elif account_type == "Property":
+                account_name = st.text_input("Property Name", placeholder="e.g., Main Residence", key=f"{key_prefix}add_account_name")
+                currency = st.selectbox("Currency", currency_codes, key=f"{key_prefix}add_account_currency")
+                property_type = st.selectbox(
+                    "Property Type",
+                    property_type_options,
+                    key=f"{key_prefix}add_property_type"
+                )
+                selected_unit = None
             else:
                 account_name = st.text_input("Account Name", placeholder="e.g., TD Chequing", key=f"{key_prefix}add_account_name")
                 currency = st.selectbox("Currency", currency_codes, key=f"{key_prefix}add_account_currency")
+                property_type = None
                 selected_unit = None
 
         # Add button
@@ -227,6 +312,22 @@ def accounts_settings(db: Database, key_prefix=""):
                     st.rerun()
                 else:
                     st.error("Please select a commodity")
+            elif account_type == "Property":
+                if account_name:
+                    db.add_account(account_name, owner, account_type, currency, None, None)
+                    if not db.get_property_by_name(account_name):
+                        db.add_property(
+                            property_name=account_name,
+                            property_type=property_type or "Residential",
+                            address="",
+                            owner=owner,
+                            currency=currency
+                        )
+                    st.session_state.account_added = True
+                    st.session_state.added_account_name = account_name
+                    st.rerun()
+                else:
+                    st.error("Please enter a property name")
             else:
                 if account_name:
                     db.add_account(account_name, owner, account_type, currency, None, None)

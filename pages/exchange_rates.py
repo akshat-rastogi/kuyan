@@ -1,7 +1,6 @@
 """
 KUYAN - Monthly Net Worth Tracker
 Exchange Rates Page Module - Displays live exchange rates and commodity prices
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 """
 

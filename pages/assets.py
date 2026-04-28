@@ -1,23 +1,23 @@
 """
 KUYAN - Monthly Net Worth Tracker
-Settings Page Module - Main settings page with tabs
+Assets Page Module - Assets management page with tabs
 Licensed under MIT License - see LICENSE file for details
 """
 
 import streamlit as st
 from database import Database
-from pages.accounts_settings import accounts_settings
-from pages.backup_restore_settings import backup_restore_settings
-from pages.owners_settings import owners_settings
+from pages.currencies_settings import currencies_settings
+from pages.commodities_settings import commodities_settings
+from pages.properties_mortgages_settings import properties_mortgages_settings
 
-def settings(db: Database):
+def assets(db: Database):
     """
-    Render the main settings page with tabs for different settings sections.
+    Render the assets page with tabs for currencies, commodities, and properties.
     
     Args:
         db: Database instance
     """
-    st.title("⚙️ Settings")
+    st.title("💎 Assets")
     
     # Custom CSS to make tabs larger (similar to dashboard)
     st.markdown("""
@@ -36,18 +36,20 @@ def settings(db: Database):
         </style>
     """, unsafe_allow_html=True)
     
-    # Create tabs for the settings pages
+    # Create tabs for the assets pages
     tab1, tab2, tab3 = st.tabs(
-        ["🏦 Accounts", "👥 Owners", "☁️ Backup & Restore"]
+        ["💱 Currencies", "🥇 Commodities", "🏘️ Properties"]
     )
     
     # Only render content in active tab to avoid key conflicts
     # Streamlit tabs render all content, so we need to ensure unique keys
     with tab1:
-        accounts_settings(db, key_prefix="accounts_")
+        currencies_settings(db, key_prefix="currencies_")
     
     with tab2:
-        owners_settings(db, key_prefix="owners_")
-
+        commodities_settings(db, key_prefix="commodities_")
+    
     with tab3:
-        backup_restore_settings(db, key_prefix="backup_restore_")
+        properties_mortgages_settings(db, key_prefix="properties_mortgages_")
+
+# Made with Bob

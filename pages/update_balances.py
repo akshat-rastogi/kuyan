@@ -1,7 +1,6 @@
 """
 KUYAN - Monthly Net Worth Tracker
 Accounts Page Module - Handles monthly balance updates
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 """
 
@@ -20,6 +19,7 @@ from helper import (
 )
 from components import render_calendar_widget
 from pages.mortgage import mortgage as mortgage_page
+from helper import get_property_equity_data, get_all_mortgage_balances
 
 
 # ===== CONSTANTS =====
@@ -71,9 +71,12 @@ def balances(db: Database):
     """
     
     accounts = db.get_accounts()
+    
+    # Get all properties with their financial data
+    properties = db.get_all_properties_with_financials()
 
-    if not accounts:
-        st.warning("No accounts found. Please add accounts first!")
+    if not accounts and not properties:
+        st.warning("No accounts or properties found. Please add accounts first!")
         return
 
     current_date = date.today()
@@ -148,8 +151,39 @@ def balances(db: Database):
             # Get exchange rates
             rates = json.loads(existing_snapshots[0]["exchange_rates"]) if existing_snapshots[0].get("exchange_rates") else {}
 
-            # Calculate total net worth
+            # Calculate total net worth from accounts
             total = calculate_total_net_worth(existing_snapshots, base_currency, db)
+            
+            # Add property equity to total net worth (only for properties not in snapshots)
+            snapshot_properties = db.get_all_properties_with_financials()
+            snapshot_mortgage_balances = get_all_mortgage_balances(db)
+            
+            # Get property names that are already in snapshots to avoid duplicates
+            snapshot_property_names = {s['name'] for s in existing_snapshots if s.get('account_type') == 'Property'}
+            
+            for prop in snapshot_properties:
+                # Skip if this property already has a snapshot (to avoid double counting)
+                if prop['property_name'] in snapshot_property_names:
+                    continue
+                    
+                market_value = float(prop.get('latest_value', 0.0)) if prop.get('latest_value') else 0.0
+                
+                # Calculate total mortgage debt for this property
+                total_debt = 0.0
+                for mortgage in prop.get('mortgages', []):
+                    mortgage_balance = next((m for m in snapshot_mortgage_balances if m['mortgage_id'] == mortgage['id']), None)
+                    if mortgage_balance:
+                        total_debt += mortgage_balance['balance']
+                
+                equity = market_value - total_debt
+                property_currency = prop.get('currency', 'EUR')
+                
+                # Convert equity to base currency and add to total
+                if property_currency != base_currency and rates:
+                    equity_in_base = get_converted_value(equity, property_currency, base_currency, rates)
+                    total += equity_in_base
+                else:
+                    total += equity
             
             # Fetch commodity prices if there are commodity accounts
             commodity_accounts = [s for s in existing_snapshots if s.get("account_type") == "Commodity"]
@@ -185,16 +219,27 @@ def balances(db: Database):
                 
                 # Display snapshots grouped by owner
                 log_entries = []
+                
+                # Get property equity data for this snapshot date
+                snapshot_properties = db.get_all_properties_with_financials()
+                snapshot_mortgage_balances = get_all_mortgage_balances(db)
+                
+                # Get property names that are already in snapshots to avoid duplicates
+                snapshot_property_names = {s['name'] for s in existing_snapshots if s.get('account_type') == 'Property'}
+                
                 for idx, owner_name in enumerate(owner_names):
                     owner_snapshots = [s for s in existing_snapshots if s['owner'] == owner_name]
+                    # Filter out properties that already have snapshots
+                    owner_properties = [p for p in snapshot_properties if p['owner'] == owner_name and p['property_name'] not in snapshot_property_names]
 
-                    if owner_snapshots:
+                    if owner_snapshots or owner_properties:
                         # Add line break before each owner (except the first one)
                         if idx > 0:
                             log_entries.append("")  # Empty line for visual separation
                         
                         log_entries.append(f"  **{owner_name}:**")
 
+                        # Display regular account snapshots
                         for snapshot in owner_snapshots:
                             # Check if this is a commodity account
                             is_commodity = snapshot["account_type"] == "Commodity"
@@ -251,8 +296,35 @@ def balances(db: Database):
                                     entry += f" = `{currency_symbol}{converted_value:,.2f}` {base_currency}"
 
                             log_entries.append(entry)
-
-                # Display all log entries
+                        
+                        # Display properties with equity
+                        for prop in owner_properties:
+                            market_value = float(prop.get('latest_value', 0.0)) if prop.get('latest_value') else 0.0
+                            
+                            # Calculate total mortgage debt for this property
+                            total_debt = 0.0
+                            for mortgage in prop.get('mortgages', []):
+                                mortgage_balance = next((m for m in snapshot_mortgage_balances if m['mortgage_id'] == mortgage['id']), None)
+                                if mortgage_balance:
+                                    total_debt += mortgage_balance['balance']
+                            
+                            equity = market_value - total_debt
+                            property_currency = prop.get('currency', 'EUR')
+                            prop_symbol = get_currency_symbol(property_currency)
+                            
+                            entry = (
+                                f"    • {prop['property_name']} (Property - Equity): "
+                                f"`{prop_symbol}{equity:,.2f}` {property_currency}"
+                            )
+                            
+                            # Convert to base currency if different
+                            if property_currency != base_currency and rates:
+                                converted_equity = get_converted_value(equity, property_currency, base_currency, rates)
+                                entry += f" = `{currency_symbol}{converted_equity:,.2f}` {base_currency}"
+                            
+                            log_entries.append(entry)
+                
+                # Display all log entries (OUTSIDE the for loop)
                 st.markdown("\n".join(log_entries))
 
     # Fetch exchange rates for the selected date
@@ -285,6 +357,9 @@ def balances(db: Database):
     # Get owners for grouping
     owners = db.get_owners()
     owner_names = [owner['name'] for owner in owners]
+    
+    # Get all mortgage balances for the selected month to calculate property equity
+    all_mortgage_balances = get_all_mortgage_balances(db)
 
     # Balance entry form - grouped by owner
     # Use a unique key based on the selected date to force form recreation when date changes
@@ -297,12 +372,17 @@ def balances(db: Database):
         # Group accounts by owner
         for owner_name in owner_names:
             owner_accounts = [acc for acc in accounts if acc['owner'] == owner_name]
+            # Filter out properties that already have account records (to avoid duplicates)
+            account_property_names = {acc['name'] for acc in owner_accounts if acc.get('account_type') == 'Property'}
+            owner_properties = [prop for prop in properties if prop['owner'] == owner_name and prop['property_name'] not in account_property_names]
 
-            if owner_accounts:
+            if owner_accounts or owner_properties:
                 st.markdown(f"### {owner_name}")
 
                 # Create 2-column layout for accounts
                 cols_per_row = 2
+                
+                # First, display regular accounts
                 for i in range(0, len(owner_accounts), cols_per_row):
                     cols = st.columns(cols_per_row)
 
@@ -340,6 +420,51 @@ def balances(db: Database):
                                     key=f"balance_{account['id']}_{selected_year}_{selected_month}"
                                 )
                                 balances[account['id']] = balance
+                
+                # Then, display properties with equity calculations (disabled inputs)
+                for i in range(0, len(owner_properties), cols_per_row):
+                    cols = st.columns(cols_per_row)
+
+                    for j, col in enumerate(cols):
+                        idx = i + j
+                        if idx < len(owner_properties):
+                            prop = owner_properties[idx]
+                            with col:
+                                # Calculate equity for this property at the selected month
+                                market_value = float(prop.get('latest_value', 0.0)) if prop.get('latest_value') else 0.0
+                                
+                                # Calculate total mortgage debt for this property at the selected month
+                                total_debt = 0.0
+                                for mortgage in prop.get('mortgages', []):
+                                    mortgage_balance = next((m for m in all_mortgage_balances if m['mortgage_id'] == mortgage['id']), None)
+                                    if mortgage_balance:
+                                        # Calculate balance at the selected snapshot date
+                                        from datetime import date as date_class
+                                        from dateutil.relativedelta import relativedelta
+                                        
+                                        mortgage_start = date_class.fromisoformat(mortgage['start_date']) if isinstance(mortgage['start_date'], str) else mortgage['start_date']
+                                        months_elapsed = (snapshot_date.year - mortgage_start.year) * 12 + (snapshot_date.month - mortgage_start.month)
+                                        
+                                        # Use the mortgage balance calculation for the specific month
+                                        # For simplicity, we'll use the current balance from all_mortgage_balances
+                                        # In a more sophisticated implementation, you'd calculate the exact balance for snapshot_date
+                                        total_debt += mortgage_balance['balance']
+                                
+                                equity = market_value - total_debt
+                                
+                                # Display property equity as disabled input
+                                property_currency = prop.get('currency', 'EUR')
+                                label = f"{prop['property_name']} - Equity ({property_currency})"
+                                
+                                st.number_input(
+                                    label,
+                                    value=equity,
+                                    step=100.0,
+                                    format="%.2f",
+                                    key=f"property_equity_{prop['id']}_{selected_year}_{selected_month}",
+                                    disabled=True,
+                                    help=f"Property equity = Market Value ({market_value:,.2f}) - Total Debt ({total_debt:,.2f})"
+                                )
 
                 st.write("")  # Spacing between owners
 

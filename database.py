@@ -1,6 +1,5 @@
 """
 KUYAN - Database Module
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 """
 
@@ -106,7 +105,7 @@ class Database:
                 )
             """)
 
-            # Mortgage settings table with all columns
+            # Mortgage settings table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS mortgage_settings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,13 +118,50 @@ class Database:
                     start_date DATE NOT NULL,
                     defer_months INTEGER NOT NULL DEFAULT 0,
                     recurring_extra_payment DECIMAL(15,2) NOT NULL DEFAULT 0.0,
-                    purchase_value DECIMAL(15,2) NOT NULL DEFAULT 0.0,
-                    present_value DECIMAL(15,2) NOT NULL DEFAULT 0.0,
                     currency TEXT NOT NULL DEFAULT 'EUR',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            
+            # Check if old columns exist and remove them (migration)
+            cursor.execute("PRAGMA table_info(mortgage_settings)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if 'purchase_value' in columns or 'present_value' in columns:
+                # Create new table without these columns
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS mortgage_settings_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        mortgage_name TEXT NOT NULL UNIQUE,
+                        lender_name TEXT NOT NULL,
+                        loan_amount DECIMAL(15,2) NOT NULL,
+                        interest_rate DECIMAL(10,4) NOT NULL,
+                        loan_term_years DECIMAL(10,4) NOT NULL,
+                        payments_per_year INTEGER NOT NULL,
+                        start_date DATE NOT NULL,
+                        defer_months INTEGER NOT NULL DEFAULT 0,
+                        recurring_extra_payment DECIMAL(15,2) NOT NULL DEFAULT 0.0,
+                        currency TEXT NOT NULL DEFAULT 'EUR',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Copy data from old table
+                cursor.execute("""
+                    INSERT INTO mortgage_settings_new
+                    (id, mortgage_name, lender_name, loan_amount, interest_rate, loan_term_years,
+                     payments_per_year, start_date, defer_months, recurring_extra_payment, currency,
+                     created_at, updated_at)
+                    SELECT id, mortgage_name, lender_name, loan_amount, interest_rate, loan_term_years,
+                           payments_per_year, start_date, defer_months, recurring_extra_payment, currency,
+                           created_at, updated_at
+                    FROM mortgage_settings
+                """)
+                
+                # Drop old table and rename new one
+                cursor.execute("DROP TABLE mortgage_settings")
+                cursor.execute("ALTER TABLE mortgage_settings_new RENAME TO mortgage_settings")
 
             # Mortgage extra payments table with mortgage_id
             cursor.execute("""
@@ -143,6 +179,59 @@ class Database:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_mortgage_payment
                 ON mortgage_extra_payments(mortgage_id, payment_number)
+            """)
+            
+            # Properties table - tracks real estate properties
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS properties (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    property_name TEXT NOT NULL UNIQUE,
+                    property_type TEXT NOT NULL,
+                    address TEXT,
+                    owner TEXT NOT NULL,
+                    currency TEXT NOT NULL DEFAULT 'EUR',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Property assets table - tracks property values over time
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS property_assets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    property_id INTEGER NOT NULL,
+                    valuation_date DATE NOT NULL,
+                    market_value DECIMAL(15,2) NOT NULL,
+                    valuation_type TEXT NOT NULL,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE CASCADE
+                )
+            """)
+            
+            # Create index for faster queries on property_id and valuation_date
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_property_valuation
+                ON property_assets(property_id, valuation_date)
+            """)
+            
+            # Property liabilities table - links mortgages to properties
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS property_liabilities (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    property_id INTEGER NOT NULL,
+                    mortgage_id INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE CASCADE,
+                    FOREIGN KEY (mortgage_id) REFERENCES mortgage_settings(id) ON DELETE CASCADE,
+                    UNIQUE(property_id, mortgage_id)
+                )
+            """)
+            
+            # Create index for faster queries
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_property_liability
+                ON property_liabilities(property_id, mortgage_id)
             """)
 
             # Seed default owners if table is empty
@@ -707,7 +796,7 @@ class Database:
             cursor.execute("""
                 SELECT id, mortgage_name, lender_name, loan_amount, interest_rate, loan_term_years,
                        payments_per_year, start_date, defer_months, recurring_extra_payment,
-                       purchase_value, present_value, currency, created_at, updated_at
+                       currency, created_at, updated_at
                 FROM mortgage_settings
                 ORDER BY mortgage_name
             """)
@@ -721,7 +810,7 @@ class Database:
             cursor.execute("""
                 SELECT id, mortgage_name, lender_name, loan_amount, interest_rate, loan_term_years,
                        payments_per_year, start_date, defer_months, recurring_extra_payment,
-                       purchase_value, present_value, currency, created_at, updated_at
+                       currency, created_at, updated_at
                 FROM mortgage_settings
                 WHERE id = ?
             """, (mortgage_id,))
@@ -735,7 +824,7 @@ class Database:
             cursor.execute("""
                 SELECT id, mortgage_name, lender_name, loan_amount, interest_rate, loan_term_years,
                        payments_per_year, start_date, defer_months, recurring_extra_payment,
-                       purchase_value, present_value, currency, created_at, updated_at
+                       currency, created_at, updated_at
                 FROM mortgage_settings
                 WHERE mortgage_name = ?
             """, (mortgage_name,))
@@ -749,38 +838,46 @@ class Database:
 
     def add_mortgage(self, mortgage_name: str, lender_name: str, loan_amount: float, interest_rate: float,
                      loan_term_years: float, payments_per_year: int, start_date: date,
-                     defer_months: int = 0, recurring_extra_payment: float = 0.0, purchase_value: float = 0.0,
-                     present_value: float = 0.0, currency: str = "EUR") -> int:
+                     defer_months: int = 0, recurring_extra_payment: float = 0.0, currency: str = "EUR") -> int:
         """Add a new mortgage"""
+        # Handle both date objects and string dates
+        if isinstance(start_date, str):
+            start_date_str = start_date
+        else:
+            start_date_str = start_date.isoformat()
+            
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO mortgage_settings (mortgage_name, lender_name, loan_amount, interest_rate,
                                                loan_term_years, payments_per_year, start_date, defer_months,
-                                               recurring_extra_payment, purchase_value, present_value, currency)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                               recurring_extra_payment, currency)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (mortgage_name, lender_name, loan_amount, interest_rate, loan_term_years,
-                  payments_per_year, start_date.isoformat(), defer_months, recurring_extra_payment,
-                  purchase_value, present_value, currency))
+                  payments_per_year, start_date_str, defer_months, recurring_extra_payment, currency))
             return cursor.lastrowid or 0
 
     def update_mortgage(self, mortgage_id: int, mortgage_name: str, lender_name: str, loan_amount: float,
                         interest_rate: float, loan_term_years: float, payments_per_year: int, start_date: date,
-                        defer_months: int = 0, recurring_extra_payment: float = 0.0, purchase_value: float = 0.0,
-                        present_value: float = 0.0, currency: str = "EUR"):
+                        defer_months: int = 0, recurring_extra_payment: float = 0.0, currency: str = "EUR"):
         """Update an existing mortgage"""
+        # Handle both date objects and string dates
+        if isinstance(start_date, str):
+            start_date_str = start_date
+        else:
+            start_date_str = start_date.isoformat()
+            
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE mortgage_settings
                 SET mortgage_name = ?, lender_name = ?, loan_amount = ?, interest_rate = ?,
                     loan_term_years = ?, payments_per_year = ?, start_date = ?, defer_months = ?,
-                    recurring_extra_payment = ?, purchase_value = ?, present_value = ?,
-                    currency = ?, updated_at = CURRENT_TIMESTAMP
+                    recurring_extra_payment = ?, currency = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (mortgage_name, lender_name, loan_amount, interest_rate, loan_term_years,
-                  payments_per_year, start_date.isoformat(), defer_months, recurring_extra_payment,
-                  purchase_value, present_value, currency, mortgage_id))
+                  payments_per_year, start_date_str, defer_months, recurring_extra_payment,
+                  currency, mortgage_id))
 
     def delete_mortgage(self, mortgage_id: int):
         """Delete a mortgage and all its extra payments"""
@@ -791,9 +888,14 @@ class Database:
 
     def save_mortgage_settings(self, lender_name: str, loan_amount: float, interest_rate: float,
                                loan_term_years: float, payments_per_year: int, start_date: date,
-                               recurring_extra_payment: float = 0.0, purchase_value: float = 0.0,
-                               present_value: float = 0.0, currency: str = "EUR") -> int:
+                               recurring_extra_payment: float = 0.0, currency: str = "EUR") -> int:
         """Save or update mortgage settings - kept for backward compatibility"""
+        # Handle both date objects and string dates
+        if isinstance(start_date, str):
+            start_date_str = start_date
+        else:
+            start_date_str = start_date.isoformat()
+            
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
@@ -807,23 +909,21 @@ class Database:
                     UPDATE mortgage_settings
                     SET lender_name = ?, loan_amount = ?, interest_rate = ?,
                         loan_term_years = ?, payments_per_year = ?, start_date = ?,
-                        recurring_extra_payment = ?, purchase_value = ?, present_value = ?,
-                        currency = ?, updated_at = CURRENT_TIMESTAMP
+                        recurring_extra_payment = ?, currency = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                 """, (lender_name, loan_amount, interest_rate, loan_term_years,
-                      payments_per_year, start_date.isoformat(), recurring_extra_payment,
-                      purchase_value, present_value, currency, existing[0]))
+                      payments_per_year, start_date_str, recurring_extra_payment,
+                      currency, existing[0]))
                 return existing[0]
             else:
                 # Insert new settings with default name
                 cursor.execute("""
                     INSERT INTO mortgage_settings (mortgage_name, lender_name, loan_amount, interest_rate,
                                                    loan_term_years, payments_per_year, start_date,
-                                                   recurring_extra_payment, purchase_value, present_value, currency)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                                   recurring_extra_payment, currency)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, ("Primary Mortgage", lender_name, loan_amount, interest_rate, loan_term_years,
-                      payments_per_year, start_date.isoformat(), recurring_extra_payment,
-                      purchase_value, present_value, currency))
+                      payments_per_year, start_date_str, recurring_extra_payment, currency))
                 return cursor.lastrowid or 0
 
     # Mortgage Extra Payments Operations
@@ -894,3 +994,226 @@ class Database:
             else:
                 cursor.execute("DELETE FROM mortgage_extra_payments")
 
+
+
+    # Property Operations
+    def get_all_properties(self) -> List[Dict]:
+        """Get all properties"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, property_name, property_type, address, owner, currency, created_at, updated_at
+                FROM properties
+                ORDER BY property_name
+            """)
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+    
+    def get_property_by_id(self, property_id: int) -> Optional[Dict]:
+        """Get a specific property by ID"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, property_name, property_type, address, owner, currency, created_at, updated_at
+                FROM properties
+                WHERE id = ?
+            """, (property_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def get_property_by_name(self, property_name: str) -> Optional[Dict]:
+        """Get a specific property by name"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, property_name, property_type, address, owner, currency, created_at, updated_at
+                FROM properties
+                WHERE property_name = ?
+            """, (property_name,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def add_property(self, property_name: str, property_type: str, address: str, owner: str, currency: str = "EUR") -> int:
+        """Add a new property"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO properties (property_name, property_type, address, owner, currency)
+                VALUES (?, ?, ?, ?, ?)
+            """, (property_name, property_type, address, owner, currency))
+            return cursor.lastrowid or 0
+    
+    def update_property(self, property_id: int, property_name: str, property_type: str, address: str, owner: str, currency: str = "EUR"):
+        """Update an existing property"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE properties
+                SET property_name = ?, property_type = ?, address = ?, owner = ?, currency = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (property_name, property_type, address, owner, currency, property_id))
+    
+    def delete_property(self, property_id: int):
+        """Delete a property and all its assets and liabilities"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM property_assets WHERE property_id = ?", (property_id,))
+            cursor.execute("DELETE FROM property_liabilities WHERE property_id = ?", (property_id,))
+            cursor.execute("DELETE FROM properties WHERE id = ?", (property_id,))
+    
+    # Property Assets Operations
+    def get_property_assets(self, property_id: int) -> List[Dict]:
+        """Get all asset valuations for a property"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, property_id, valuation_date, market_value, valuation_type, notes, created_at
+                FROM property_assets
+                WHERE property_id = ?
+                ORDER BY valuation_date DESC
+            """, (property_id,))
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+    
+    def get_latest_property_asset(self, property_id: int) -> Optional[Dict]:
+        """Get the most recent asset valuation for a property"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, property_id, valuation_date, market_value, valuation_type, notes, created_at
+                FROM property_assets
+                WHERE property_id = ?
+                ORDER BY valuation_date DESC
+                LIMIT 1
+            """, (property_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def add_property_asset(self, property_id: int, valuation_date: date, market_value: float, valuation_type: str, notes: str = "") -> int:
+        """Add a new property asset valuation"""
+        # Handle both date objects and string dates
+        if isinstance(valuation_date, str):
+            valuation_date_str = valuation_date
+        else:
+            valuation_date_str = valuation_date.isoformat()
+            
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO property_assets (property_id, valuation_date, market_value, valuation_type, notes)
+                VALUES (?, ?, ?, ?, ?)
+            """, (property_id, valuation_date_str, market_value, valuation_type, notes))
+            return cursor.lastrowid or 0
+    
+    def update_property_asset(self, asset_id: int, valuation_date: date, market_value: float, valuation_type: str, notes: str = ""):
+        """Update an existing property asset valuation"""
+        # Handle both date objects and string dates
+        if isinstance(valuation_date, str):
+            valuation_date_str = valuation_date
+        else:
+            valuation_date_str = valuation_date.isoformat()
+            
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE property_assets
+                SET valuation_date = ?, market_value = ?, valuation_type = ?, notes = ?
+                WHERE id = ?
+            """, (valuation_date_str, market_value, valuation_type, notes, asset_id))
+    
+    def delete_property_asset(self, asset_id: int):
+        """Delete a property asset valuation"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM property_assets WHERE id = ?", (asset_id,))
+    
+    # Property Liabilities Operations
+    def link_mortgage_to_property(self, property_id: int, mortgage_id: int) -> int:
+        """Link a mortgage to a property"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("""
+                    INSERT INTO property_liabilities (property_id, mortgage_id)
+                    VALUES (?, ?)
+                """, (property_id, mortgage_id))
+                return cursor.lastrowid or 0
+            except sqlite3.IntegrityError:
+                # Link already exists
+                return 0
+    
+    def unlink_mortgage_from_property(self, property_id: int, mortgage_id: int):
+        """Unlink a mortgage from a property"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM property_liabilities
+                WHERE property_id = ? AND mortgage_id = ?
+            """, (property_id, mortgage_id))
+    
+    def get_property_mortgages(self, property_id: int) -> List[Dict]:
+        """Get all mortgages linked to a property"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT m.id, m.mortgage_name, m.lender_name, m.loan_amount, m.interest_rate,
+                       m.loan_term_years, m.payments_per_year, m.start_date, m.defer_months,
+                       m.recurring_extra_payment, m.currency, m.created_at, m.updated_at
+                FROM mortgage_settings m
+                INNER JOIN property_liabilities pl ON m.id = pl.mortgage_id
+                WHERE pl.property_id = ?
+                ORDER BY m.mortgage_name
+            """, (property_id,))
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+    
+    def get_mortgage_property(self, mortgage_id: int) -> Optional[Dict]:
+        """Get the property linked to a mortgage"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT p.id, p.property_name, p.property_type, p.address, p.owner, p.currency,
+                       p.created_at, p.updated_at
+                FROM properties p
+                INNER JOIN property_liabilities pl ON p.id = pl.property_id
+                WHERE pl.mortgage_id = ?
+            """, (mortgage_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def get_all_properties_with_financials(self) -> List[Dict]:
+        """Get all properties with their latest asset values and total liabilities"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    p.id,
+                    p.property_name,
+                    p.property_type,
+                    p.address,
+                    p.owner,
+                    p.currency,
+                    pa.market_value as latest_value,
+                    pa.valuation_date as latest_valuation_date,
+                    pa.valuation_type,
+                    a.id as account_id,
+                    a.name as account_name,
+                    a.created_at as account_created_at
+                FROM properties p
+                LEFT JOIN (
+                    SELECT property_id, market_value, valuation_date, valuation_type,
+                           ROW_NUMBER() OVER (PARTITION BY property_id ORDER BY valuation_date DESC) as rn
+                    FROM property_assets
+                ) pa ON p.id = pa.property_id AND pa.rn = 1
+                LEFT JOIN accounts a
+                    ON a.account_type = 'Property' AND a.name = p.property_name
+                ORDER BY COALESCE(a.name, p.property_name)
+            """)
+            rows = cursor.fetchall()
+            properties = [dict(row) for row in rows]
+            
+            # Add mortgage information for each property
+            for prop in properties:
+                prop['mortgages'] = self.get_property_mortgages(prop['id'])
+            
+            return properties

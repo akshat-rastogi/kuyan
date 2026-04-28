@@ -1,7 +1,6 @@
 """
 KUYAN - Monthly Net Worth Tracker
 Owners Page Module - Manages account owners
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 """
 

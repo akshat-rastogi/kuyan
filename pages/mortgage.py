@@ -1,7 +1,6 @@
 """
 KUYAN - Monthly Net Worth Tracker
 Mortgage Page Module - Mortgage amortization calculator
-Copyright (c) 2025 mycloudcondo inc.
 Licensed under MIT License - see LICENSE file for details
 """
 
@@ -27,41 +26,83 @@ def mortgage(db: Database):
     st.markdown("### 🏠 Mortgage Amortization Schedule")
     st.caption("Interactive mortgage amortization calculator with recurring and one-off extra payments.")
     
-    # Get all mortgages from database
-    all_mortgages = db.get_all_mortgages()
+    # Get all properties with mortgages
+    all_properties = db.get_all_properties_with_financials()
     
-    # Check if any mortgages exist
-    if not all_mortgages:
-        st.warning("⚠️ No mortgages configured. Please configure your mortgage details in Settings → Mortgage tab.")
-        st.info("👉 Go to **Settings** page and select the **🏠 Mortgage** tab to add your mortgage details.")
+    # Filter properties that have mortgages
+    properties_with_mortgages = [p for p in all_properties if p.get('mortgages')]
+    
+    # Check if any properties with mortgages exist
+    if not properties_with_mortgages:
+        st.warning("⚠️ No properties with mortgages configured. Please configure your properties and mortgages in Settings → Properties tab.")
+        st.info("👉 Go to **Settings** page and select the **🏘️ Properties** tab to add properties and their mortgages.")
         return
     
-    # Create dropdown for mortgage selection
-    mortgage_names = [m['mortgage_name'] for m in all_mortgages]
+    # Create property dropdown
+    property_names = [p['property_name'] for p in properties_with_mortgages]
+    property_map = {p['property_name']: p for p in properties_with_mortgages}
     
-    # Initialize selected mortgage in session state
-    if "selected_mortgage_name" not in st.session_state:
-        st.session_state.selected_mortgage_name = mortgage_names[0]
+    # Initialize selected property in session state
+    if "selected_property_name_update" not in st.session_state:
+        st.session_state.selected_property_name_update = property_names[0]
     
-    # Mortgage selector
-    selected_mortgage_name = st.selectbox(
-        "Select Mortgage",
-        options=mortgage_names,
-        index=mortgage_names.index(st.session_state.selected_mortgage_name) if st.session_state.selected_mortgage_name in mortgage_names else 0,
-        key="mortgage_selector",
-        help="Select which mortgage to view the amortization schedule for"
-    )
+    # Property selector
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        selected_property_name = st.selectbox(
+            "Select Property",
+            options=property_names,
+            index=property_names.index(st.session_state.selected_property_name_update) if st.session_state.selected_property_name_update in property_names else 0,
+            key="property_selector_update",
+            help="Select which property to view mortgages for"
+        )
     
     # Update session state
-    st.session_state.selected_mortgage_name = selected_mortgage_name
+    st.session_state.selected_property_name_update = selected_property_name
     
-    # Ensure selected_mortgage_name is not None
-    if not selected_mortgage_name:
-        st.error("❌ No mortgage selected. Please select a mortgage from the dropdown.")
+    # Get the selected property
+    selected_property = property_map.get(selected_property_name)
+    
+    if not selected_property:
+        st.error("❌ Selected property not found. Please refresh the page.")
         return
     
+    # Get mortgages for the selected property
+    property_mortgages = selected_property.get('mortgages', [])
+    
+    if not property_mortgages:
+        st.warning(f"⚠️ No mortgages found for {selected_property_name}.")
+        return
+    
+    # Create mortgage dropdown for the selected property
+    mortgage_names = [m['mortgage_name'] for m in property_mortgages]
+    mortgage_map = {m['mortgage_name']: m for m in property_mortgages}
+    
+    # Initialize selected mortgage in session state
+    mortgage_session_key = f"selected_mortgage_name_update_{selected_property['id']}"
+    if mortgage_session_key not in st.session_state:
+        st.session_state[mortgage_session_key] = mortgage_names[0]
+    
+    # Ensure the selected mortgage is still valid for this property
+    if st.session_state[mortgage_session_key] not in mortgage_names:
+        st.session_state[mortgage_session_key] = mortgage_names[0]
+    
+    # Mortgage selector
+    with col2:
+        selected_mortgage_name = st.selectbox(
+            "Select Mortgage",
+            options=mortgage_names,
+            index=mortgage_names.index(st.session_state[mortgage_session_key]) if st.session_state[mortgage_session_key] in mortgage_names else 0,
+            key=f"mortgage_selector_update_{selected_property['id']}",
+            help="Select which mortgage to view the amortization schedule for"
+        )
+    
+    # Update session state
+    st.session_state[mortgage_session_key] = selected_mortgage_name
+    
     # Get the selected mortgage details
-    selected_mortgage = db.get_mortgage_by_name(selected_mortgage_name)
+    selected_mortgage = mortgage_map.get(selected_mortgage_name)
     
     if not selected_mortgage:
         st.error("❌ Selected mortgage not found. Please refresh the page.")
@@ -95,7 +136,26 @@ def mortgage(db: Database):
     recurring_extra_payment = float(selected_mortgage["recurring_extra_payment"])
     currency = selected_mortgage.get("currency", "EUR")
     
-    st.info("💡 To modify mortgage details, go to **Settings → Mortgage** tab.")
+    # Show property information
+    with st.expander("🏘️ Property Information", expanded=False):
+        st.markdown(f"**Property:** {selected_property['property_name']}")
+        if selected_property.get('address'):
+            st.markdown(f"**Address:** {selected_property['address']}")
+        st.markdown(f"**Owner:** {selected_property['owner']}")
+        
+        # Get latest property asset value
+        latest_asset = db.get_latest_property_asset(selected_property['id'])
+        if latest_asset:
+            present_val = float(latest_asset['market_value'])
+            valuation_date = latest_asset['valuation_date']
+            valuation_type = latest_asset['valuation_type']
+            
+            st.divider()
+            st.markdown("**Property Valuation:**")
+            st.write(f"Market Value: {format_currency(present_val, currency)} ({valuation_type})")
+            st.write(f"Valuation Date: {valuation_date}")
+    
+    st.info("💡 To modify mortgage details, go to **Settings → Properties** tab.")
 
     st.write("#### One-Off / Custom Extra Payments")
 
